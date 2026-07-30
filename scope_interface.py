@@ -10,8 +10,6 @@ Adapt open()/close() to match your already-validated connection code.
 
 import pyvisa
 
-# Tektronix returns this for an invalid / uncomputable measurement.
-# It is a normal float on the wire, NOT an error — must be screened.
 TEK_INVALID = 9.9e37
 _INVALID_THRESHOLD = 9.8e37
 
@@ -84,7 +82,7 @@ class Scope:
         Arm one single-sequence acquisition and BLOCK until it completes.
 
         *OPC? returns '1' only after the SEQuence finishes, so the follow-on
-        measurement reads a fully-settled, known frame — the key to
+        measurement reads a fully-settled, known frame -- the key to
         repeatability and to agreement with a manual cursor read.
 
         AUTO trigger mode is essential here: it triggers on the signal if one

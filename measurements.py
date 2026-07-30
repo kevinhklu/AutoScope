@@ -13,9 +13,9 @@ from scope_interface import Scope, is_invalid
 
 @dataclass
 class Measurement:
-    kind: str            # e.g. "PK2PK"
-    source: str          # e.g. "CH1"
-    value: Optional[float]   # None when invalid — never a silent 9.9e37
+    kind: str            # ex: "PK2PK"
+    source: str          # ex: "CH1"
+    value: Optional[float]   # None when invalid
     units: str
     valid: bool
     note: str = ""
@@ -64,13 +64,14 @@ def vmean(scope: Scope, source: str = "CH1") -> Measurement:
     return immediate_single_source(scope, "MEAN", source)
 
 
-# --- quick manual smoke test -------------------------------------------
+
+
 if __name__ == "__main__":
     import os
     # Bench machine only — needs NI-VISA + the scope. Keeps your unit's serial
     # OUT of the committed code. Set it in the shell before running:
-    #   Windows CMD:  set AUTOSCOPE_RESOURCE=USB0::0x0699::0x0456::C012345::INSTR
-    #   PowerShell:   $env:AUTOSCOPE_RESOURCE="USB0::0x0699::0x0456::C012345::INSTR"
+    #   Windows CMD:  set AUTOSCOPE_RESOURCE=USB0::0x0699::0x0456::C013718::INSTR
+    #   PowerShell:   $env:AUTOSCOPE_RESOURCE="USB0::0x0699::0x0456::C013718::INSTR"
     RESOURCE = os.environ.get("AUTOSCOPE_RESOURCE")
     if not RESOURCE:
         raise SystemExit(
