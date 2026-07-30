@@ -63,7 +63,13 @@ class Scope:
         *OPC? returns '1' only after the SEQuence finishes, so the follow-on
         measurement reads a fully-settled, known frame — the key to
         repeatability and to agreement with a manual cursor read.
+
+        AUTO trigger mode is essential here: it triggers on the signal if one
+        is present, and self-triggers if not, so the sequence ALWAYS completes.
+        In NORMAL mode the scope waits forever for a qualifying edge, and with
+        no trigger *OPC? blocks until the VISA timeout (VI_ERROR_TMO).
         """
+        self.write("TRIGger:A:MODe AUTO")
         self.write("ACQuire:STOPAfter SEQuence")
         self.write("ACQuire:STATE RUN")
         self.query("*OPC?")   # blocks; ensure self.timeout_ms > acquisition time
