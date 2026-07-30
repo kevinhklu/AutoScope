@@ -39,10 +39,29 @@ class Scope:
         return self
 
     def __exit__(self, *exc):
+        # Always hand the scope back in a LIVE state, even if the body crashed.
+        # A scripted single-sequence leaves the scope STOPped on one frozen
+        # frame; without this the bench display looks dead until someone hits
+        # Run. Guarded so a restore failure can never mask the real exception.
         if self._inst is not None:
+            try:
+                self.restore_live()
+            except Exception:
+                pass
             self._inst.close()
         if self._rm is not None:
             self._rm.close()
+
+    def restore_live(self) -> None:
+        """
+        Return the scope to continuous, free-running, AUTO-triggered
+        acquisition — i.e. the normal front-panel 'Run' state. Call this after
+        any scripted single/triggered acquisition so the display keeps updating
+        for whoever is standing at the bench.
+        """
+        self.write("TRIGger:A:MODe AUTO")
+        self.write("ACQuire:STOPAfter RUNSTop")   # continuous, not single
+        self.write("ACQuire:STATE RUN")
 
     # --- primitives ------------------------------------------------------
     def write(self, cmd: str) -> None:

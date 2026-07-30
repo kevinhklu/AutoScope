@@ -102,7 +102,7 @@ if __name__ == "__main__":
             print(f"  {name:9s}: {v}")
 
         # SCL timing on that SAME captured frame (no re-acquire).
-        print("\nSCL timing (70%=%.2fV, 30%=%.2fV):" % (0.70 * vdd, 0.30 * vdd))
+        print(f"\nSCL timing (70% = {0.70 * vdd:.2f} V, 30% = {0.30 * vdd:.2f} V):")
         for name, fn in (("Tscl_fall", scl_fall_time),
                          ("Tscl_high", scl_high_time),
                          ("Tscl_low",  scl_low_time)):
