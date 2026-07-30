@@ -20,6 +20,10 @@ def is_invalid(value: float) -> bool:
     return abs(value) > _INVALID_THRESHOLD
 
 
+class NoBusActivity(Exception):
+    """No qualifying trigger edge arrived in time — e.g. an idle I2C bus."""
+
+
 class Scope:
     def __init__(self, resource: str, timeout_ms: int = 10_000):
         self.resource = resource
@@ -73,3 +77,45 @@ class Scope:
         self.write("ACQuire:STOPAfter SEQuence")
         self.write("ACQuire:STATE RUN")
         self.query("*OPC?")   # blocks; ensure self.timeout_ms > acquisition time
+
+    def triggered_single(self, source: str, slope: str = "FALL",
+                         level: float | None = None,
+                         wait_ms: int = 5_000) -> None:
+        """
+        Arm a NORMAL edge-triggered single acquisition and block until a REAL
+        edge fires it — it will NOT self-trigger. That's what you want for a
+        bursty bus like I2C: trigger on SCL activity so you capture an actual
+        transaction, never an idle frame.
+
+        source : trigger channel, e.g. "CH1" (put SCL here to catch clocking)
+        slope  : "FALL" or "RISe" — SCL's falling edge marks clock activity
+        level  : trigger threshold in volts; None keeps the scope's current
+                 level. Set to ~half the bus voltage (e.g. 0.9 for a 1.8V bus).
+        wait_ms: how long to wait for traffic before giving up.
+
+        Raises NoBusActivity (not a raw VISA timeout) if no edge arrives in
+        wait_ms — i.e. the bus was idle the whole time.
+        """
+        self.write("TRIGger:A:MODe NORMal")
+        self.write("TRIGger:A:TYPe EDGE")
+        self.write(f"TRIGger:A:EDGE:SOURce {source}")
+        self.write(f"TRIGger:A:EDGE:SLOpe {slope}")
+        if level is not None:
+            self.write(f"TRIGger:A:LEVel:{source} {level}")
+        self.write("ACQuire:STOPAfter SEQuence")
+        self.write("ACQuire:STATE RUN")
+
+        prev_timeout = self._inst.timeout
+        self._inst.timeout = wait_ms
+        try:
+            self.query("*OPC?")
+        except pyvisa.errors.VisaIOError as e:
+            if e.error_code == pyvisa.constants.StatusCode.error_timeout:
+                self.write("ACQuire:STATE STOP")   # disarm the dangling sequence
+                raise NoBusActivity(
+                    f"No {slope} edge on {source} within {wait_ms} ms — "
+                    f"bus idle, wrong trigger source/level, or line off-screen."
+                ) from None
+            raise
+        finally:
+            self._inst.timeout = prev_timeout
