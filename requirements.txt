@@ -1,0 +1,9 @@
+# Python dependency (installs the same on Mac and Windows):
+pyvisa
+
+# IMPORTANT: pyvisa is only the Python front-end. It needs a VISA driver
+# underneath, which is NOT a pip package:
+#   - Windows bench machine: install NI-VISA (from ni.com). Required to talk
+#     to the scope. This is what makes real hardware tests work.
+#   - Mac dev machine: no VISA driver needed. You only run the offline logic
+#     tests here (test_offline.py), which use a mock and never open VISA.

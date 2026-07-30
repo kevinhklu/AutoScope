@@ -1,0 +1,21 @@
+# --- macOS (dev machine) ---
+.DS_Store
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- Editors ---
+.vscode/
+.idea/
+
+# --- Test output (raw bench logs are data, not source) ---
+results/*.csv
+!results/.gitkeep
+
+# --- Local, machine-specific config (holds the scope serial) ---
+config.local.yaml
