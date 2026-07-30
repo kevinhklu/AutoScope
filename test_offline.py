@@ -77,6 +77,31 @@ def test_acquisition_ordering():
     print("PASS ordering: value is read after acquisition")
 
 
+def test_scl_timing_reflevels():
+    from i2c import scl_fall_time, scl_high_time, scl_low_time
+    # Fall time: 70%/30% of 1.8V as ABSOLUTE HIGH/LOW refs, measured with FALL.
+    s = MockScope(value=30e-9)
+    scl_fall_time(s, "CH1", 1.8)
+    assert "MEASUrement:REFLevel:METHod ABSolute" in s.log
+    assert "MEASUrement:REFLevel:ABSolute:HIGH 1.26" in s.log
+    assert "MEASUrement:REFLevel:ABSolute:LOW 0.54" in s.log
+    assert "MEASUrement:IMMed:TYPe FALL" in s.log
+    assert "<single_acquisition>" not in s.log      # measured on captured frame
+
+    # High time: MID=70% (1.26V), positive pulse width.
+    s = MockScope(value=1e-6)
+    scl_high_time(s, "CH1", 1.8)
+    assert "MEASUrement:REFLevel:ABSolute:MID 1.26" in s.log
+    assert "MEASUrement:IMMed:TYPe PWIdth" in s.log
+
+    # Low time: MID=30% (0.54V), negative pulse width.
+    s = MockScope(value=1e-6)
+    scl_low_time(s, "CH1", 1.8)
+    assert "MEASUrement:REFLevel:ABSolute:MID 0.54" in s.log
+    assert "MEASUrement:IMMed:TYPe NWIdth" in s.log
+    print("PASS scl-timing: fall/high/low use correct absolute 70/30% refs")
+
+
 def test_read_measurement_does_not_acquire():
     # On a triggered I2C frame, re-acquiring would destroy the transaction.
     # read_measurement() must read the existing frame and NEVER acquire.
@@ -91,5 +116,6 @@ if __name__ == "__main__":
     test_valid_reading()
     test_invalid_sentinel()
     test_acquisition_ordering()
+    test_scl_timing_reflevels()
     test_read_measurement_does_not_acquire()
     print("\nAll offline logic tests passed.")

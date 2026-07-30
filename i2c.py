@@ -20,6 +20,47 @@ from scope_interface import Scope, NoBusActivity
 from measurements import read_measurement
 
 
+def set_abs_reflevels(scope, high=None, mid=None, low=None, mid2=None):
+    """
+    Set measurement reference levels as ABSOLUTE volts (not percent-of-signal).
+
+    Your I2C thresholds are defined as % of Vdd, and Vdd is a fixed 1.8 V rail,
+    so absolute levels reproduce them exactly and are immune to edge
+    overshoot/ringing skewing the scope's idea of the signal 'top'.
+
+    HIGH/LOW are used by rise/fall-time measurements; MID by pulse-width and
+    single-source edge timing; MID2 is the second waveform's mid level for
+    two-source DELay measurements (SCL vs SDA).
+    """
+    scope.write("MEASUrement:REFLevel:METHod ABSolute")
+    if high is not None:
+        scope.write(f"MEASUrement:REFLevel:ABSolute:HIGH {high:.4g}")
+    if mid is not None:
+        scope.write(f"MEASUrement:REFLevel:ABSolute:MID {mid:.4g}")
+    if low is not None:
+        scope.write(f"MEASUrement:REFLevel:ABSolute:LOW {low:.4g}")
+    if mid2 is not None:
+        scope.write(f"MEASUrement:REFLevel:ABSolute:MID2 {mid2:.4g}")
+
+
+def scl_fall_time(scope, scl, vdd):
+    """Tscl_fall: 70%->30% on SCL falling edge. FALL time spans HIGH->LOW ref."""
+    set_abs_reflevels(scope, high=0.70 * vdd, low=0.30 * vdd)
+    return read_measurement(scope, "FALL", scl)
+
+
+def scl_high_time(scope, scl, vdd):
+    """Tscl_high: 70% rise -> 70% fall. Positive pulse width at MID=70%."""
+    set_abs_reflevels(scope, mid=0.70 * vdd)
+    return read_measurement(scope, "PWIdth", scl)
+
+
+def scl_low_time(scope, scl, vdd):
+    """Tscl_low: 30% fall -> 30% rise. Negative pulse width at MID=30%."""
+    set_abs_reflevels(scope, mid=0.30 * vdd)
+    return read_measurement(scope, "NWIdth", scl)
+
+
 def capture_transaction(scope, scl, sda, vdd, wait_ms=5000):
     """
     Trigger on an SCL falling edge (start of clocking) to capture a live
@@ -59,5 +100,17 @@ if __name__ == "__main__":
         for name, m in results.items():
             v = f"{m.value:.3f} {m.units}" if m.valid else f"INVALID ({m.note})"
             print(f"  {name:9s}: {v}")
+
+        # SCL timing on that SAME captured frame (no re-acquire).
+        print("\nSCL timing (70%=%.2fV, 30%=%.2fV):" % (0.70 * vdd, 0.30 * vdd))
+        for name, fn in (("Tscl_fall", scl_fall_time),
+                         ("Tscl_high", scl_high_time),
+                         ("Tscl_low",  scl_low_time)):
+            m = fn(s, scl, vdd)
+            if m.valid:
+                print(f"  {name:9s}: {m.value * 1e9:8.1f} ns")
+            else:
+                print(f"  {name:9s}: INVALID ({m.note})")
+
         print("\nSanity check: HIGH ~= Vdd, LOW ~= 0. If HIGH is well below Vdd\n"
-              "or the frame is INVALID, the line may be off-screen or mis-scaled.")
+              "or a reading is INVALID, the line may be off-screen or mis-scaled.")
