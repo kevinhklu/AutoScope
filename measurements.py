@@ -21,10 +21,11 @@ class Measurement:
     note: str = ""
 
 
-def immediate_single_source(scope: Scope, meas_type: str, source: str) -> Measurement:
+def read_measurement(scope: Scope, meas_type: str, source: str) -> Measurement:
     """
-    Configure a single-source IMMed measurement, take ONE synced acquisition,
-    then read value + units. Screens the 9.9e37 invalid sentinel.
+    Read an IMMed measurement from the frame ALREADY in acquisition memory.
+    Does NOT acquire — call this AFTER scope.triggered_single(...) so you
+    measure the transaction you captured, not a fresh frame. Screens 9.9e37.
 
     NOTE on the source keyword: MDO4000-series immediate measurements use
     SOURCE1 (SOURCE2 exists for two-source measurements like DELay). If your
@@ -33,8 +34,6 @@ def immediate_single_source(scope: Scope, meas_type: str, source: str) -> Measur
     scope.write(f"MEASUrement:IMMed:TYPe {meas_type}")
     scope.write(f"MEASUrement:IMMed:SOURCE1 {source}")
 
-    scope.single_acquisition()   # deterministic frame
-
     raw = float(scope.query("MEASUrement:IMMed:VALue?"))
     units = scope.query("MEASUrement:IMMed:UNIts?").strip('"')
 
@@ -42,6 +41,17 @@ def immediate_single_source(scope: Scope, meas_type: str, source: str) -> Measur
         return Measurement(meas_type, source, None, units, valid=False,
                            note="scope returned 9.9e37 (flat/off-screen/no edges)")
     return Measurement(meas_type, source, raw, units, valid=True)
+
+
+def immediate_single_source(scope: Scope, meas_type: str, source: str) -> Measurement:
+    """
+    Take ONE synced AUTO acquisition, then read. For standalone amplitude
+    measurements on a continuous signal (Vpp, Vmean on a function-gen sine).
+    Do NOT use on a triggered I2C frame — single_acquisition() would overwrite
+    the captured transaction. Use triggered_single() + read_measurement() there.
+    """
+    scope.single_acquisition()                       # deterministic frame
+    return read_measurement(scope, meas_type, source)
 
 
 def vpp(scope: Scope, source: str = "CH1") -> Measurement:

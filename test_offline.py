@@ -8,7 +8,7 @@ reading, invalid 9.9e37 screening) without touching hardware.
 Run:  python3 test_offline.py
 """
 
-from measurements import immediate_single_source, vpp
+from measurements import immediate_single_source, read_measurement, vpp
 
 
 class MockScope:
@@ -18,16 +18,21 @@ class MockScope:
         self._value = value
         self._units = units
         self._opts = opts
-        self.commands = []          # every write() the code sent, in order
+        self.log = []               # every write/acquire/query, in call order
+
+    @property
+    def commands(self):
+        return self.log
 
     # --- interface used by measurements.py ---
     def write(self, cmd):
-        self.commands.append(cmd)
+        self.log.append(cmd)
 
     def single_acquisition(self):
-        self.commands.append("<single_acquisition>")
+        self.log.append("<single_acquisition>")
 
     def query(self, cmd):
+        self.log.append(f"?{cmd}")
         if cmd == "*IDN?":
             return "TEKTRONIX,MDO4054C,C099999,CF:FAKE"
         if cmd == "*OPT?":
@@ -63,17 +68,54 @@ def test_invalid_sentinel():
 
 
 def test_acquisition_ordering():
-    # The read must happen AFTER the synced acquisition, else it's stale.
+    # The value must be READ after the synced acquisition, else it's stale.
     s = MockScope(value=1.0)
     vpp(s, "CH1")
-    acq = s.commands.index("<single_acquisition>")
-    # type/source are set before the acquisition; value is read after it.
-    assert s.commands.index("MEASUrement:IMMed:TYPe PK2pk") < acq
-    print("PASS ordering: acquisition happens before value read")
+    acq = s.log.index("<single_acquisition>")
+    val_read = s.log.index("?MEASUrement:IMMed:VALue?")
+    assert acq < val_read
+    print("PASS ordering: value is read after acquisition")
+
+
+def test_scl_timing_reflevels():
+    from i2c import scl_fall_time, scl_high_time, scl_low_time
+    # Fall time: 70%/30% of 1.8V as ABSOLUTE HIGH/LOW refs, measured with FALL.
+    s = MockScope(value=30e-9)
+    scl_fall_time(s, "CH1", 1.8)
+    assert "MEASUrement:REFLevel:METHod ABSolute" in s.log
+    assert "MEASUrement:REFLevel:ABSolute:HIGH 1.26" in s.log
+    assert "MEASUrement:REFLevel:ABSolute:LOW 0.54" in s.log
+    assert "MEASUrement:IMMed:TYPe FALL" in s.log
+    assert "<single_acquisition>" not in s.log      # measured on captured frame
+
+    # High time: MID=70% (1.26V), positive pulse width.
+    s = MockScope(value=1e-6)
+    scl_high_time(s, "CH1", 1.8)
+    assert "MEASUrement:REFLevel:ABSolute:MID 1.26" in s.log
+    assert "MEASUrement:IMMed:TYPe PWIdth" in s.log
+
+    # Low time: MID=30% (0.54V), negative pulse width.
+    s = MockScope(value=1e-6)
+    scl_low_time(s, "CH1", 1.8)
+    assert "MEASUrement:REFLevel:ABSolute:MID 0.54" in s.log
+    assert "MEASUrement:IMMed:TYPe NWIdth" in s.log
+    print("PASS scl-timing: fall/high/low use correct absolute 70/30% refs")
+
+
+def test_read_measurement_does_not_acquire():
+    # On a triggered I2C frame, re-acquiring would destroy the transaction.
+    # read_measurement() must read the existing frame and NEVER acquire.
+    s = MockScope(value=1.4)
+    m = read_measurement(s, "HIGH", "CH1")
+    assert m.valid and m.value == 1.4
+    assert "<single_acquisition>" not in s.log
+    print("PASS no-acquire : read_measurement leaves the captured frame intact")
 
 
 if __name__ == "__main__":
     test_valid_reading()
     test_invalid_sentinel()
     test_acquisition_ordering()
+    test_scl_timing_reflevels()
+    test_read_measurement_does_not_acquire()
     print("\nAll offline logic tests passed.")
