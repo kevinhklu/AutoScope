@@ -70,19 +70,23 @@ def hold_times(scl_t, scl_v, sda_t, sda_v, vdd):
 
 def setup_times(scl_t, scl_v, sda_t, sda_v, vdd):
     """
-    tSU;DAT per data bit: from the preceding SDA 70% crossing to the subsequent
-    SCL 30% RISING edge. The SDA transition must sit in the SCL-low window before
-    that rising edge (after the previous SCL falling edge) so it belongs to this
-    bit's data. Uses the 70% threshold on SDA exactly as your definition states.
+    tSU;DAT per data bit: from the 70% point on a SDA RISING edge (data 0->1,
+    at settled-high) to the subsequent SCL 30% rising edge. The SDA rising edge
+    must sit in the SCL-low window before that clock edge (after the previous
+    SCL falling edge) so it belongs to this bit's data.
+
+    Only SDA *rising* edges count (per the team's definition) — a falling SDA
+    edge crosses 70% at the START of its fall, which is not a valid-data point,
+    so it is intentionally excluded rather than producing an inflated tSU.
     """
     lo, hi = 0.30 * vdd, 0.70 * vdd
     scl_rises = sorted(t for t, d in find_crossings(scl_t, scl_v, lo) if d == "rise")
     scl_falls = sorted(t for t, d in find_crossings(scl_t, scl_v, lo) if d == "fall")
-    sda_70 = sorted(t for t, _ in find_crossings(sda_t, sda_v, hi))
+    sda_70_rise = sorted(t for t, d in find_crossings(sda_t, sda_v, hi) if d == "rise")
     results = []
     for tr in scl_rises:
         prev_fall = max((t for t in scl_falls if t < tr), default=float("-inf"))
-        cand = [t for t in sda_70 if prev_fall < t < tr]
+        cand = [t for t in sda_70_rise if prev_fall < t < tr]
         if cand:
             results.append(tr - max(cand))
     return results

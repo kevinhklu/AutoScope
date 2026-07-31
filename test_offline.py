@@ -111,18 +111,22 @@ def test_edge_crossings_and_data_timing():
     assert cr[0][1] == "rise" and abs(cr[0][0] - 1.5) < 1e-9
     assert cr[1][1] == "fall" and abs(cr[1][0] - 3.5) < 1e-9
 
-    # One data bit: SCL falls ~10.4, rises ~29.6; SDA falls (70%@19.6, 30%@20.4).
+    # One data bit: SCL falls ~10.4, rises ~29.6; SDA RISES (30%@19.6, 70%@20.4).
     vdd = 1.8
     scl_t, scl_v = [0, 9, 11, 29, 31], [1.8, 1.8, 0, 0, 1.8]
-    sda_t, sda_v = [0, 19, 21], [1.8, 1.8, 0]
+    sda_t, sda_v = [0, 19, 21], [0, 0, 1.8]
 
     holds = hold_times(scl_t, scl_v, sda_t, sda_v, vdd)
     setups = setup_times(scl_t, scl_v, sda_t, sda_v, vdd)
-    # tHD = first SDA change (70%@19.6) - SCL fall(30%@10.4) = 9.2
+    # tHD = first SDA change (30%@19.6) - SCL fall(30%@10.4) = 9.2
     assert len(holds) == 1 and abs(holds[0] - 9.2) < 1e-9
-    # tSU = SCL rise(30%@29.6) - preceding SDA 70%(19.6) = 10.0
-    assert len(setups) == 1 and abs(setups[0] - 10.0) < 1e-9
-    print("PASS data-timing: crossings + tHD/tSU match hand calculation")
+    # tSU = SCL rise(30%@29.6) - SDA rising-edge 70%(20.4) = 9.2
+    assert len(setups) == 1 and abs(setups[0] - 9.2) < 1e-9
+
+    # A FALLING SDA edge must NOT produce a tSU value (excluded by definition).
+    setups_fall = setup_times(scl_t, scl_v, [0, 19, 21], [1.8, 1.8, 0], vdd)
+    assert setups_fall == []
+    print("PASS data-timing: crossings + tHD/tSU match hand calc; falling-SDA tSU excluded")
 
 
 def test_read_measurement_does_not_acquire():
