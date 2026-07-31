@@ -3,18 +3,14 @@
 Scripted, logged, repeatable bench measurements on a Tektronix MDO4054C,
 replacing manual cursor reads.
 
-> **Status: learning / prototype. NOT qualified.** Nothing here is validated
-> for use in a test record until it has been run side-by-side against the
-> manual cursor method on known-good boards and signed off by the owner of
-> the test procedure.
+> **Status: prototype. NOT qualified.** 
 
 ## Install
 
 ```
 pip install -r requirements.txt
 ```
-Also requires **NI-VISA** installed (from ni.com) to talk to the scope — it is
-not a pip package.
+Also requires **NI-VISA** installed (from ni.com) to talk to the scope
 
 ## Configure
 
