@@ -151,7 +151,7 @@ class Scope:
         self.write("DATa:ENCdg RIBinary")     # signed integer, big-endian
         self.write("DATa:WIDth 1")            # 8-bit (full MDO4000 vertical res)
         self.write("DATa:STARt 1")
-        rec = int(self.query("HORizontal:RECOrdlength?"))
+        rec = int(float(self.query("HORizontal:RECOrdlength?")))
         self.write(f"DATa:STOP {rec}")
 
         xincr = float(self.query("WFMOutpre:XINcr?"))
@@ -160,7 +160,15 @@ class Scope:
         yoff = float(self.query("WFMOutpre:YOFf?"))
         yzero = float(self.query("WFMOutpre:YZEro?"))
 
-        raw = self._inst.query_binary_values("CURVe?", datatype="b", container=list)
+        # A full-record CURVe? over USB can exceed the normal timeout; give the
+        # bulk transfer plenty of headroom, then restore the working timeout.
+        prev_timeout = self._inst.timeout
+        self._inst.timeout = max(self.timeout_ms, 60_000)
+        try:
+            raw = self._inst.query_binary_values("CURVe?", datatype="b", container=list)
+        finally:
+            self._inst.timeout = prev_timeout
+
         volts = [yzero + ymult * (r - yoff) for r in raw]
         times = [xzero + xincr * i for i in range(len(raw))]
         return times, volts
