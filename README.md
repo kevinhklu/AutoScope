@@ -8,44 +8,49 @@ replacing manual cursor reads.
 > manual cursor method on known-good boards and signed off by the owner of
 > the test procedure.
 
-## Two-machine workflow
+## Install
 
-| Machine | Role | What runs here |
-|---|---|---|
-| **Mac** | Write code | Offline logic tests only (`test_offline.py`) — a mock scope, no VISA driver needed |
-| **Windows laptop** | Bench | Real hardware tests against the scope — requires NI-VISA + the instrument |
-
-The Mac has no VISA driver, so it can never open the scope. That's fine: the
-code is structured so all measurement *logic* is testable with a mock, and only
-the actual instrument I/O needs the bench.
-
-## Setup
-
-Both machines:
 ```
 pip install -r requirements.txt
 ```
-Windows bench machine additionally needs **NI-VISA** installed (from ni.com) —
-it is not a pip package. See `requirements.txt`.
+Also requires **NI-VISA** installed (from ni.com) to talk to the scope — it is
+not a pip package.
 
-## Run the offline logic tests (Mac, anytime)
-```
-python3 test_offline.py
-```
-Verifies valid readings, invalid-value (9.9e37) screening, and acquisition
-ordering — without any hardware.
+## Configure
 
-## Run a live reading (Windows bench machine)
+Set your scope's VISA resource string (keeps the serial out of the code):
 ```
-# set your scope's VISA string (keeps the serial out of git):
 set AUTOSCOPE_RESOURCE=USB0::0x0699::0x0456::<serial>::INSTR
+```
+Optional overrides (these are the defaults):
+```
+set AUTOSCOPE_SCL=CH1      REM channel probing SCL
+set AUTOSCOPE_SDA=CH2      REM channel probing SDA
+set AUTOSCOPE_VDD=1.8      REM bus voltage, volts
+set AUTOSCOPE_DELAY=5      REM seconds to wait before capture (0 = none)
+```
+
+## Run
+
+Basic voltage reading (`*IDN?`, `*OPT?`, and a CH1 Vpp):
+```
 python measurements.py
 ```
-Prints `*IDN?` (instrument ID), `*OPT?` (installed options — look for
-`DPOEMBD`, the I2C/SPI decode package), and a live CH1 peak-to-peak reading.
+
+I2C timing — captures a live transaction, then prints SCL levels, SCL
+fall/high/low times, and per-bit tHD;DAT / tSU;DAT:
+```
+python i2c.py
+```
+
+Logic tests (no scope required):
+```
+python test_offline.py
+```
 
 ## Files
-- `scope_interface.py` — VISA connection + the deterministic single-acquisition path
-- `measurements.py` — built-in measurements (Vpp, Vmean)
+- `scope_interface.py` — VISA connection, deterministic acquisition, raw waveform read
+- `measurements.py` — built-in measurements (Vpp, Vmean) and the shared read path
+- `i2c.py` — I2C capture and timing (SCL fall/high/low, tHD;DAT, tSU;DAT)
 - `test_offline.py` — hardware-free logic tests
-- `results/` — CSV logs (git-ignored; raw bench data, not source)
+- `results/` — CSV logs
