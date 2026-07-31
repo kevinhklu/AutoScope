@@ -85,12 +85,16 @@ def load_config(path: str = "config.yaml") -> Config:
     for env, (section, keyname, cast) in _ENV.items():
         val = os.environ.get(env)
         if val is not None and val != "":
-            data.setdefault(section, {})[keyname] = cast(val)
+            sec = data.get(section)
+            if not isinstance(sec, dict):        # missing or emptied to None
+                sec = data[section] = {}
+            sec[keyname] = cast(val)
 
-    scope = data.get("scope", {})
-    channels = data.get("channels", {})
-    bus = data.get("bus", {})
-    thresholds = data.get("thresholds", {})
+    # `or {}` guards against a section written but left empty (parses as None)
+    scope = data.get("scope") or {}
+    channels = data.get("channels") or {}
+    bus = data.get("bus") or {}
+    thresholds = data.get("thresholds") or {}
 
     resource = scope.get("resource")
     if not resource:

@@ -211,12 +211,14 @@ if __name__ == "__main__":
         # SCL timing on that SAME captured frame (no re-acquire).
         print(f"\nSCL timing ({cfg.high_pct:.0f}% = {cfg.high_v:.2f} V, "
               f"{cfg.low_pct:.0f}% = {cfg.low_v:.2f} V):")
-        _report(logger, cfg, "Tscl_fall", "tscl_fall",
-                scl_fall_time(s, cfg.scl, cfg.vdd, hf, lf).value)
-        _report(logger, cfg, "Tscl_high", "scl_high",
-                scl_high_time(s, cfg.scl, cfg.vdd, hf).value)
-        _report(logger, cfg, "Tscl_low", "scl_low",
-                scl_low_time(s, cfg.scl, cfg.vdd, lf).value)
+        scl_results = [
+            ("Tscl_fall", "tscl_fall", scl_fall_time(s, cfg.scl, cfg.vdd, hf, lf)),
+            ("Tscl_high", "scl_high",  scl_high_time(s, cfg.scl, cfg.vdd, hf)),
+            ("Tscl_low",  "scl_low",   scl_low_time(s, cfg.scl, cfg.vdd, lf)),
+        ]
+        for label, key, m in scl_results:
+            _report(logger, cfg, label, key, m.value,
+                    note="" if m.valid else m.note)
 
         # I2C data timing from the raw waveforms of the SAME captured frame.
         print("\nI2C data timing (per bit, worst = tightest margin):")
