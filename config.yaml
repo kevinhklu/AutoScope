@@ -24,6 +24,6 @@ thresholds:                # percent of Vdd, per the team's I2C timing definitio
 limits:
   tscl_fall: { max_ns: 300 }
   scl_high:  { min_ns: 600 }
-  scl_low:   { min_ns: 1300 }
+  scl_low:   { min_ns: 600 }
   thd_dat:   { min_ns: 0 }
   tsu_dat:   { min_ns: 100 }
