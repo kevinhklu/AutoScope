@@ -1,0 +1,29 @@
+# AutoScope test configuration.
+# Edit this file to point at a different board/bus — no code changes needed.
+# Precedence (highest first): environment variables > config.local.yaml > this file.
+
+scope:
+  # VISA resource string. Leave blank to supply it via the AUTOSCOPE_RESOURCE
+  # env var or a git-ignored config.local.yaml (keeps the serial out of git).
+  resource:
+  probe_delay_s: 5          # countdown before capture, so you can place probes
+
+channels:
+  scl: CH1
+  sda: CH2
+
+bus:
+  vdd: 1.8                  # bus voltage (volts). Sets the threshold voltages below.
+
+thresholds:                # percent of Vdd, per the team's I2C timing definitions
+  high_pct: 70
+  low_pct: 30
+
+# Spec limits -> PASS/FAIL. Omit a limit (or a min/max) to skip that check.
+# Values in nanoseconds. Example values below are Fast-mode (400 kHz) I2C.
+limits:
+  tscl_fall: { max_ns: 300 }
+  scl_high:  { min_ns: 600 }
+  scl_low:   { min_ns: 1300 }
+  thd_dat:   { min_ns: 0 }
+  tsu_dat:   { min_ns: 100 }

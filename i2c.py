@@ -14,11 +14,12 @@ Bench machine only (needs NI-VISA + scope). Configure via env vars:
 Run:  py i2c.py
 """
 
-import os
 import time
 
 from scope_interface import Scope, NoBusActivity
 from measurements import read_measurement
+from config import load_config
+from results_log import ResultLogger
 
 
 # --- raw-waveform edge math (pure functions, unit-testable without a scope) ---
@@ -41,7 +42,7 @@ def find_crossings(times, volts, level):
     return out
 
 
-def hold_times(scl_t, scl_v, sda_t, sda_v, vdd):
+def hold_times(scl_t, scl_v, sda_t, sda_v, vdd, high_frac=0.70, low_frac=0.30):
     """
     tHD;DAT per data bit: from the SCL 30% FALLING edge to the moment SDA next
     starts changing. The SDA endpoint is the FIRST crossing of *either* 30% or
@@ -54,7 +55,7 @@ def hold_times(scl_t, scl_v, sda_t, sda_v, vdd):
     edge reaches first". If your convention is the opposite (the far threshold),
     swap to the LAST crossing before the next SCL fall instead of the first.
     """
-    lo, hi = 0.30 * vdd, 0.70 * vdd
+    lo, hi = low_frac * vdd, high_frac * vdd
     scl_falls = sorted(t for t, d in find_crossings(scl_t, scl_v, lo) if d == "fall")
     sda_events = sorted(
         t for t, _ in find_crossings(sda_t, sda_v, lo) + find_crossings(sda_t, sda_v, hi)
@@ -68,7 +69,7 @@ def hold_times(scl_t, scl_v, sda_t, sda_v, vdd):
     return results
 
 
-def setup_times(scl_t, scl_v, sda_t, sda_v, vdd):
+def setup_times(scl_t, scl_v, sda_t, sda_v, vdd, high_frac=0.70, low_frac=0.30):
     """
     tSU;DAT per data bit: from the 70% point on a SDA RISING edge (data 0->1,
     at settled-high) to the subsequent SCL 30% rising edge. The SDA rising edge
@@ -79,7 +80,7 @@ def setup_times(scl_t, scl_v, sda_t, sda_v, vdd):
     edge crosses 70% at the START of its fall, which is not a valid-data point,
     so it is intentionally excluded rather than producing an inflated tSU.
     """
-    lo, hi = 0.30 * vdd, 0.70 * vdd
+    lo, hi = low_frac * vdd, high_frac * vdd
     scl_rises = sorted(t for t, d in find_crossings(scl_t, scl_v, lo) if d == "rise")
     scl_falls = sorted(t for t, d in find_crossings(scl_t, scl_v, lo) if d == "fall")
     sda_70_rise = sorted(t for t, d in find_crossings(sda_t, sda_v, hi) if d == "rise")
@@ -92,7 +93,7 @@ def setup_times(scl_t, scl_v, sda_t, sda_v, vdd):
     return results
 
 
-def data_timing(scope, scl, sda, vdd):
+def data_timing(scope, scl, sda, vdd, high_frac=0.70, low_frac=0.30):
     """
     Read SCL+SDA waveforms from the captured frame and compute per-bit
     tHD;DAT and tSU;DAT. Returns {'thd': [...], 'tsu': [...]} in seconds.
@@ -100,8 +101,8 @@ def data_timing(scope, scl, sda, vdd):
     scl_t, scl_v = scope.read_waveform(scl)
     sda_t, sda_v = scope.read_waveform(sda)
     return {
-        "thd": hold_times(scl_t, scl_v, sda_t, sda_v, vdd),
-        "tsu": setup_times(scl_t, scl_v, sda_t, sda_v, vdd),
+        "thd": hold_times(scl_t, scl_v, sda_t, sda_v, vdd, high_frac, low_frac),
+        "tsu": setup_times(scl_t, scl_v, sda_t, sda_v, vdd, high_frac, low_frac),
     }
 
 
@@ -128,21 +129,21 @@ def set_abs_reflevels(scope, high=None, mid=None, low=None, mid2=None):
         scope.write(f"MEASUrement:REFLevel:ABSolute:MID2 {mid2:.4g}")
 
 
-def scl_fall_time(scope, scl, vdd):
-    """Tscl_fall: 70%->30% on SCL falling edge. FALL time spans HIGH->LOW ref."""
-    set_abs_reflevels(scope, high=0.70 * vdd, low=0.30 * vdd)
+def scl_fall_time(scope, scl, vdd, high_frac=0.70, low_frac=0.30):
+    """Tscl_fall: high->low on SCL falling edge. FALL time spans HIGH->LOW ref."""
+    set_abs_reflevels(scope, high=high_frac * vdd, low=low_frac * vdd)
     return read_measurement(scope, "FALL", scl)
 
 
-def scl_high_time(scope, scl, vdd):
-    """Tscl_high: 70% rise -> 70% fall. Positive pulse width at MID=70%."""
-    set_abs_reflevels(scope, mid=0.70 * vdd)
+def scl_high_time(scope, scl, vdd, high_frac=0.70):
+    """Tscl_high: high-rise -> high-fall. Positive pulse width at MID=high."""
+    set_abs_reflevels(scope, mid=high_frac * vdd)
     return read_measurement(scope, "PWIdth", scl)
 
 
-def scl_low_time(scope, scl, vdd):
-    """Tscl_low: 30% fall -> 30% rise. Negative pulse width at MID=30%."""
-    set_abs_reflevels(scope, mid=0.30 * vdd)
+def scl_low_time(scope, scl, vdd, low_frac=0.30):
+    """Tscl_low: low-fall -> low-rise. Negative pulse width at MID=low."""
+    set_abs_reflevels(scope, mid=low_frac * vdd)
     return read_measurement(scope, "NWIdth", scl)
 
 
@@ -164,31 +165,40 @@ def capture_transaction(scope, scl, sda, vdd, wait_ms=5000):
     }
 
 
+def _report(logger, cfg, name, limit_key, value_s, note=""):
+    """Print one measurement with PASS/FAIL and log it. value_s in seconds."""
+    if value_s is None:
+        print(f"  {name:9s}: INVALID ({note})")
+        logger.log(name, None, status="INVALID", note=note)
+        return
+    chk = cfg.evaluate(limit_key, value_s)
+    tag = "" if chk.status == "NO LIMIT" else f"  [{chk.status}]"
+    print(f"  {name:9s}: {value_s * 1e9:8.1f} ns{tag}")
+    logger.log(name, value_s * 1e9, status=chk.status,
+               limit_min_ns=chk.min_ns, limit_max_ns=chk.max_ns, note=note)
+
+
 if __name__ == "__main__":
-    resource = os.environ.get("AUTOSCOPE_RESOURCE")
-    if not resource:
-        raise SystemExit("Set AUTOSCOPE_RESOURCE first (bench machine only).")
-    scl = os.environ.get("AUTOSCOPE_SCL", "CH1")
-    sda = os.environ.get("AUTOSCOPE_SDA", "CH2")
-    vdd = float(os.environ.get("AUTOSCOPE_VDD", "1.8"))
+    cfg = load_config()
+    logger = ResultLogger()
+    hf, lf = cfg.high_pct / 100.0, cfg.low_pct / 100.0
 
-    delay = float(os.environ.get("AUTOSCOPE_DELAY", "5"))
-
-    print(f"SCL={scl}  SDA={sda}  Vdd={vdd} V  (trigger level {vdd/2:.2f} V)")
-    with Scope(resource) as s:
+    print(f"SCL={cfg.scl}  SDA={cfg.sda}  Vdd={cfg.vdd} V  "
+          f"(trigger level {cfg.vdd/2:.2f} V)   log -> {logger.path}")
+    with Scope(cfg.resource) as s:
         print("IDN :", s.idn())
 
         # Give the operator time to get probes on the board before capture.
-        if delay > 0:
-            print(f"\nProbe now — capturing in {int(delay)} s "
-                  f"(set AUTOSCOPE_DELAY to change):")
-            for remaining in range(int(delay), 0, -1):
+        if cfg.probe_delay_s > 0:
+            print(f"\nProbe now — capturing in {int(cfg.probe_delay_s)} s "
+                  f"(scope.probe_delay_s / AUTOSCOPE_DELAY to change):")
+            for remaining in range(int(cfg.probe_delay_s), 0, -1):
                 print(f"  {remaining}...", end="", flush=True)
                 time.sleep(1)
             print(" capturing.")
 
         try:
-            results = capture_transaction(s, scl, sda, vdd)
+            results = capture_transaction(s, cfg.scl, cfg.sda, cfg.vdd)
         except NoBusActivity as e:
             raise SystemExit(f"\nNo transaction captured: {e}\n"
                              "Make sure the board is actively driving the bus,\n"
@@ -199,28 +209,30 @@ if __name__ == "__main__":
             print(f"  {name:9s}: {v}")
 
         # SCL timing on that SAME captured frame (no re-acquire).
-        print(f"\nSCL timing (70% = {0.70 * vdd:.2f} V, 30% = {0.30 * vdd:.2f} V):")
-        for name, fn in (("Tscl_fall", scl_fall_time),
-                         ("Tscl_high", scl_high_time),
-                         ("Tscl_low",  scl_low_time)):
-            m = fn(s, scl, vdd)
-            if m.valid:
-                print(f"  {name:9s}: {m.value * 1e9:8.1f} ns")
-            else:
-                print(f"  {name:9s}: INVALID ({m.note})")
+        print(f"\nSCL timing ({cfg.high_pct:.0f}% = {cfg.high_v:.2f} V, "
+              f"{cfg.low_pct:.0f}% = {cfg.low_v:.2f} V):")
+        _report(logger, cfg, "Tscl_fall", "tscl_fall",
+                scl_fall_time(s, cfg.scl, cfg.vdd, hf, lf).value)
+        _report(logger, cfg, "Tscl_high", "scl_high",
+                scl_high_time(s, cfg.scl, cfg.vdd, hf).value)
+        _report(logger, cfg, "Tscl_low", "scl_low",
+                scl_low_time(s, cfg.scl, cfg.vdd, lf).value)
 
         # I2C data timing from the raw waveforms of the SAME captured frame.
         print("\nI2C data timing (per bit, worst = tightest margin):")
-        dt = data_timing(s, scl, sda, vdd)
-        for label, key in (("tHD;DAT", "thd"), ("tSU;DAT", "tsu")):
+        dt = data_timing(s, cfg.scl, cfg.sda, cfg.vdd, hf, lf)
+        for label, limit_key, key in (("tHD;DAT", "thd_dat", "thd"),
+                                      ("tSU;DAT", "tsu_dat", "tsu")):
             vals = dt[key]
             if vals:
                 allns = ", ".join(f"{v * 1e9:.1f}" for v in vals)
-                print(f"  {label}: worst {min(vals) * 1e9:7.1f} ns   "
-                      f"(n={len(vals)}: {allns} ns)")
+                _report(logger, cfg, label, limit_key, min(vals),
+                        note=f"worst-case of n={len(vals)}: {allns} ns")
             else:
-                print(f"  {label}: no measurable SDA transitions in frame — "
-                      f"fix SDA scaling / widen timebase so SDA edges are captured.")
+                msg = "no measurable SDA transitions (fix SDA scaling / widen timebase)"
+                print(f"  {label}: {msg}")
+                logger.log(label, None, status="INVALID", note=msg)
 
-        print("\nSanity check: HIGH ~= Vdd, LOW ~= 0. If HIGH is well below Vdd\n"
+        print(f"\nLogged {logger.run_id} to {logger.path}")
+        print("Sanity check: HIGH ~= Vdd, LOW ~= 0. If HIGH is well below Vdd\n"
               "or a reading is INVALID, the line may be off-screen or mis-scaled.")

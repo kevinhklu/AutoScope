@@ -18,17 +18,18 @@ not a pip package.
 
 ## Configure
 
-Set your scope's VISA resource string (keeps the serial out of the code):
+All test settings live in **`config.yaml`** — channels, bus voltage, threshold
+percentages, and spec limits (which drive PASS/FAIL). Edit that file to point at
+a different board or bus; no code changes needed.
+
+Set the scope's VISA resource string. Keep the serial out of git by using the
+env var or a git-ignored `config.local.yaml`:
 ```
 set AUTOSCOPE_RESOURCE=USB0::0x0699::0x0456::<serial>::INSTR
 ```
-Optional overrides (these are the defaults):
-```
-set AUTOSCOPE_SCL=CH1      REM channel probing SCL
-set AUTOSCOPE_SDA=CH2      REM channel probing SDA
-set AUTOSCOPE_VDD=1.8      REM bus voltage, volts
-set AUTOSCOPE_DELAY=5      REM seconds to wait before capture (0 = none)
-```
+Precedence (highest first): **env vars > `config.local.yaml` > `config.yaml`**.
+Env overrides: `AUTOSCOPE_RESOURCE`, `AUTOSCOPE_SCL`, `AUTOSCOPE_SDA`,
+`AUTOSCOPE_VDD`, `AUTOSCOPE_DELAY`.
 
 ## Run
 
@@ -37,8 +38,9 @@ Basic voltage reading (`*IDN?`, `*OPT?`, and a CH1 Vpp):
 python measurements.py
 ```
 
-I2C timing — captures a live transaction, then prints SCL levels, SCL
-fall/high/low times, and per-bit tHD;DAT / tSU;DAT:
+I2C timing — captures a live transaction, prints SCL levels, SCL fall/high/low
+times, and per-bit tHD;DAT / tSU;DAT with PASS/FAIL against the configured
+limits, and appends every result to `results/measurements.csv`:
 ```
 python i2c.py
 ```
@@ -49,8 +51,11 @@ python test_offline.py
 ```
 
 ## Files
+- `config.yaml` — test configuration: channels, bus voltage, thresholds, spec limits
+- `config.py` — loads config (env / config.local.yaml / config.yaml) and evaluates limits
 - `scope_interface.py` — VISA connection, deterministic acquisition, raw waveform read
 - `measurements.py` — built-in measurements (Vpp, Vmean) and the shared read path
 - `i2c.py` — I2C capture and timing (SCL fall/high/low, tHD;DAT, tSU;DAT)
+- `results_log.py` — appends measurements to a CSV (one row per measurement)
 - `test_offline.py` — hardware-free logic tests
-- `results/` — CSV logs
+- `results/` — CSV logs (git-ignored)
