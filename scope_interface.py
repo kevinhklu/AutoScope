@@ -34,6 +34,7 @@ class Scope:
         self._rm = pyvisa.ResourceManager()          # NI-VISA backend
         self._inst = self._rm.open_resource(self.resource)
         self._inst.timeout = self.timeout_ms
+        self.write("HEADer OFF")   # bare query replies (no ':CMD ' prefix) -> float()able
         return self
 
     def __exit__(self, *exc):
@@ -136,3 +137,30 @@ class Scope:
             raise
         finally:
             self._inst.timeout = prev_timeout
+
+    def read_waveform(self, source: str):
+        """
+        Return (times, volts) as parallel lists for `source`, read from the
+        frame CURRENTLY in acquisition memory (call after triggered_single;
+        does NOT acquire). Raw 8-bit samples are converted with the WFMOutpre
+        preamble — getting this scaling right is the whole game:
+            volts = YZEro + YMUlt * (raw - YOFf)
+            time  = XZEro + XINcr * sample_index
+        """
+        self.write(f"DATa:SOUrce {source}")
+        self.write("DATa:ENCdg RIBinary")     # signed integer, big-endian
+        self.write("DATa:WIDth 1")            # 8-bit (full MDO4000 vertical res)
+        self.write("DATa:STARt 1")
+        rec = int(self.query("HORizontal:RECOrdlength?"))
+        self.write(f"DATa:STOP {rec}")
+
+        xincr = float(self.query("WFMOutpre:XINcr?"))
+        xzero = float(self.query("WFMOutpre:XZEro?"))
+        ymult = float(self.query("WFMOutpre:YMUlt?"))
+        yoff = float(self.query("WFMOutpre:YOFf?"))
+        yzero = float(self.query("WFMOutpre:YZEro?"))
+
+        raw = self._inst.query_binary_values("CURVe?", datatype="b", container=list)
+        volts = [yzero + ymult * (r - yoff) for r in raw]
+        times = [xzero + xincr * i for i in range(len(raw))]
+        return times, volts

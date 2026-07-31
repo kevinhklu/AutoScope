@@ -102,6 +102,29 @@ def test_scl_timing_reflevels():
     print("PASS scl-timing: fall/high/low use correct absolute 70/30% refs")
 
 
+def test_edge_crossings_and_data_timing():
+    from i2c import find_crossings, hold_times, setup_times
+
+    # find_crossings: interpolates sub-sample, tags direction.
+    cr = find_crossings([0, 1, 2, 3, 4], [0, 0, 1.8, 1.8, 0], 0.9)
+    assert len(cr) == 2
+    assert cr[0][1] == "rise" and abs(cr[0][0] - 1.5) < 1e-9
+    assert cr[1][1] == "fall" and abs(cr[1][0] - 3.5) < 1e-9
+
+    # One data bit: SCL falls ~10.4, rises ~29.6; SDA falls (70%@19.6, 30%@20.4).
+    vdd = 1.8
+    scl_t, scl_v = [0, 9, 11, 29, 31], [1.8, 1.8, 0, 0, 1.8]
+    sda_t, sda_v = [0, 19, 21], [1.8, 1.8, 0]
+
+    holds = hold_times(scl_t, scl_v, sda_t, sda_v, vdd)
+    setups = setup_times(scl_t, scl_v, sda_t, sda_v, vdd)
+    # tHD = first SDA change (70%@19.6) - SCL fall(30%@10.4) = 9.2
+    assert len(holds) == 1 and abs(holds[0] - 9.2) < 1e-9
+    # tSU = SCL rise(30%@29.6) - preceding SDA 70%(19.6) = 10.0
+    assert len(setups) == 1 and abs(setups[0] - 10.0) < 1e-9
+    print("PASS data-timing: crossings + tHD/tSU match hand calculation")
+
+
 def test_read_measurement_does_not_acquire():
     # On a triggered I2C frame, re-acquiring would destroy the transaction.
     # read_measurement() must read the existing frame and NEVER acquire.
@@ -117,5 +140,6 @@ if __name__ == "__main__":
     test_invalid_sentinel()
     test_acquisition_ordering()
     test_scl_timing_reflevels()
+    test_edge_crossings_and_data_timing()
     test_read_measurement_does_not_acquire()
     print("\nAll offline logic tests passed.")

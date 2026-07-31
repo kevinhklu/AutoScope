@@ -15,9 +15,90 @@ Run:  py i2c.py
 """
 
 import os
+import time
 
 from scope_interface import Scope, NoBusActivity
 from measurements import read_measurement
+
+
+# --- raw-waveform edge math (pure functions, unit-testable without a scope) ---
+
+def find_crossings(times, volts, level):
+    """
+    Interpolated times where `volts` crosses `level`, each tagged 'rise'/'fall'.
+    Linear interpolation between the two straddling samples places the crossing
+    sub-sample, so timing resolution beats the raw sample interval.
+    """
+    out = []
+    for i in range(1, len(volts)):
+        a, b = volts[i - 1], volts[i]
+        if a < level <= b:                                   # rising through level
+            frac = (level - a) / (b - a)
+            out.append((times[i - 1] + frac * (times[i] - times[i - 1]), "rise"))
+        elif a > level >= b:                                 # falling through level
+            frac = (a - level) / (a - b)
+            out.append((times[i - 1] + frac * (times[i] - times[i - 1]), "fall"))
+    return out
+
+
+def hold_times(scl_t, scl_v, sda_t, sda_v, vdd):
+    """
+    tHD;DAT per data bit: from the SCL 30% FALLING edge to the moment SDA next
+    starts changing. The SDA endpoint is the FIRST crossing of *either* 30% or
+    70% after the SCL edge — which automatically selects 70% for a falling SDA
+    and 30% for a rising SDA (i.e. the threshold nearest the level it's leaving).
+    Only SDA changes before the next SCL falling edge count, so an unchanged bit
+    isn't mis-paired with a far-away transition.
+
+    NOTE (confirm with your team): this encodes "30% or 70% = whichever the
+    edge reaches first". If your convention is the opposite (the far threshold),
+    swap to the LAST crossing before the next SCL fall instead of the first.
+    """
+    lo, hi = 0.30 * vdd, 0.70 * vdd
+    scl_falls = sorted(t for t, d in find_crossings(scl_t, scl_v, lo) if d == "fall")
+    sda_events = sorted(
+        t for t, _ in find_crossings(sda_t, sda_v, lo) + find_crossings(sda_t, sda_v, hi)
+    )
+    results = []
+    for i, tf in enumerate(scl_falls):
+        window_end = scl_falls[i + 1] if i + 1 < len(scl_falls) else float("inf")
+        nxt = next((t for t in sda_events if tf < t < window_end), None)
+        if nxt is not None:
+            results.append(nxt - tf)
+    return results
+
+
+def setup_times(scl_t, scl_v, sda_t, sda_v, vdd):
+    """
+    tSU;DAT per data bit: from the preceding SDA 70% crossing to the subsequent
+    SCL 30% RISING edge. The SDA transition must sit in the SCL-low window before
+    that rising edge (after the previous SCL falling edge) so it belongs to this
+    bit's data. Uses the 70% threshold on SDA exactly as your definition states.
+    """
+    lo, hi = 0.30 * vdd, 0.70 * vdd
+    scl_rises = sorted(t for t, d in find_crossings(scl_t, scl_v, lo) if d == "rise")
+    scl_falls = sorted(t for t, d in find_crossings(scl_t, scl_v, lo) if d == "fall")
+    sda_70 = sorted(t for t, _ in find_crossings(sda_t, sda_v, hi))
+    results = []
+    for tr in scl_rises:
+        prev_fall = max((t for t in scl_falls if t < tr), default=float("-inf"))
+        cand = [t for t in sda_70 if prev_fall < t < tr]
+        if cand:
+            results.append(tr - max(cand))
+    return results
+
+
+def data_timing(scope, scl, sda, vdd):
+    """
+    Read SCL+SDA waveforms from the captured frame and compute per-bit
+    tHD;DAT and tSU;DAT. Returns {'thd': [...], 'tsu': [...]} in seconds.
+    """
+    scl_t, scl_v = scope.read_waveform(scl)
+    sda_t, sda_v = scope.read_waveform(sda)
+    return {
+        "thd": hold_times(scl_t, scl_v, sda_t, sda_v, vdd),
+        "tsu": setup_times(scl_t, scl_v, sda_t, sda_v, vdd),
+    }
 
 
 def set_abs_reflevels(scope, high=None, mid=None, low=None, mid2=None):
@@ -87,9 +168,21 @@ if __name__ == "__main__":
     sda = os.environ.get("AUTOSCOPE_SDA", "CH2")
     vdd = float(os.environ.get("AUTOSCOPE_VDD", "1.8"))
 
+    delay = float(os.environ.get("AUTOSCOPE_DELAY", "5"))
+
     print(f"SCL={scl}  SDA={sda}  Vdd={vdd} V  (trigger level {vdd/2:.2f} V)")
     with Scope(resource) as s:
         print("IDN :", s.idn())
+
+        # Give the operator time to get probes on the board before capture.
+        if delay > 0:
+            print(f"\nProbe now — capturing in {int(delay)} s "
+                  f"(set AUTOSCOPE_DELAY to change):")
+            for remaining in range(int(delay), 0, -1):
+                print(f"  {remaining}...", end="", flush=True)
+                time.sleep(1)
+            print(" capturing.")
+
         try:
             results = capture_transaction(s, scl, sda, vdd)
         except NoBusActivity as e:
@@ -111,6 +204,19 @@ if __name__ == "__main__":
                 print(f"  {name:9s}: {m.value * 1e9:8.1f} ns")
             else:
                 print(f"  {name:9s}: INVALID ({m.note})")
+
+        # I2C data timing from the raw waveforms of the SAME captured frame.
+        print("\nI2C data timing (per bit, worst = tightest margin):")
+        dt = data_timing(s, scl, sda, vdd)
+        for label, key in (("tHD;DAT", "thd"), ("tSU;DAT", "tsu")):
+            vals = dt[key]
+            if vals:
+                allns = ", ".join(f"{v * 1e9:.1f}" for v in vals)
+                print(f"  {label}: worst {min(vals) * 1e9:7.1f} ns   "
+                      f"(n={len(vals)}: {allns} ns)")
+            else:
+                print(f"  {label}: no measurable SDA transitions in frame — "
+                      f"fix SDA scaling / widen timebase so SDA edges are captured.")
 
         print("\nSanity check: HIGH ~= Vdd, LOW ~= 0. If HIGH is well below Vdd\n"
               "or a reading is INVALID, the line may be off-screen or mis-scaled.")
