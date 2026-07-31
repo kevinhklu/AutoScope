@@ -168,7 +168,7 @@ if __name__ == "__main__":
     sda = os.environ.get("AUTOSCOPE_SDA", "CH2")
     vdd = float(os.environ.get("AUTOSCOPE_VDD", "1.8"))
 
-    delay = float(os.environ.get("AUTOSCOPE_DELAY", "5"))
+    delay = float(os.environ.get("AUTOSCOPE_DELAY", "10"))
 
     print(f"SCL={scl}  SDA={sda}  Vdd={vdd} V  (trigger level {vdd/2:.2f} V)")
     with Scope(resource) as s:
