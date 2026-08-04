@@ -56,7 +56,7 @@ def period(scope: Scope, source: str = "CH1") -> Measurement:
     return immediate_single_source(scope, "PERiod", source)
 
 def dutycycle(scope: Scope, source: str = "CH1") -> Measurement:
-    return immediate_single_source(scope, "DUTYcycle", source)
+    return immediate_single_source(scope, "PDUty", source)
 
 
 
@@ -69,11 +69,9 @@ if __name__ == "__main__":
     if not RESOURCE:
         raise SystemExit(
             "Set AUTOSCOPE_RESOURCE to your scope's VISA string first.\n"
-            "(This runs on the Windows bench machine, not the Mac.)"
         )
     with Scope(RESOURCE) as s:
         print("IDN :", s.idn())
-        print("OPT :", s.options())          # check for DPOEMBD here
         v_pp = vpp(s, "CH1")
         v_dc = vmean(s, "CH1")
         f = frequency(s, "CH1")
