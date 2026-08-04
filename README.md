@@ -14,7 +14,7 @@ Also requires **NI-VISA** installed (from ni.com) to talk to the scope
 
 ## Configure
 
-All test settings live in **`config.yaml`** — channels, bus voltage, threshold
+All test settings live in **`config.yaml`** —> channels, bus voltage, threshold
 percentages, and spec limits (which drive PASS/FAIL). Edit that file to point at
 a different board or bus; no code changes needed.
 
