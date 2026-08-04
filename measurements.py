@@ -62,21 +62,17 @@ def dutycycle(scope: Scope, source: str = "CH1") -> Measurement:
 
 
 if __name__ == "__main__":
-    import os
-    #   Windows CMD:  set AUTOSCOPE_RESOURCE=USB0::0x0699::0x0456::C013718::INSTR
-    #   PowerShell:   $env:AUTOSCOPE_RESOURCE="USB0::0x0699::0x0456::C013718::INSTR"
-    RESOURCE = os.environ.get("AUTOSCOPE_RESOURCE")
-    if not RESOURCE:
-        raise SystemExit(
-            "Set AUTOSCOPE_RESOURCE to your scope's VISA string first.\n"
-        )
-    with Scope(RESOURCE) as s:
+    from config import load_config
+
+    cfg = load_config()          # resource comes from config.yaml (or env / local)
+    ch = cfg.scl
+    with Scope(cfg.resource) as s:
         print("IDN :", s.idn())
-        v_pp = vpp(s, "CH1")
-        v_dc = vmean(s, "CH1")
-        f = frequency(s, "CH1")
-        p = period(s, "CH1")
-        d = dutycycle(s, "CH1")
+        v_pp = vpp(s, ch)
+        v_dc = vmean(s, ch)
+        f = frequency(s, ch)
+        p = period(s, ch)
+        d = dutycycle(s, ch)
 
         print(f"Vpp : {v_pp.value} {v_pp.units}  valid={v_pp.valid} {v_pp.note}")
         print(f"V DC: {v_dc.value} {v_dc.units}  valid={v_dc.valid} {v_dc.note}")

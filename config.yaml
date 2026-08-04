@@ -3,9 +3,10 @@
 # Precedence (highest first): environment variables > config.local.yaml > this file.
 
 scope:
-  # VISA resource string. Leave blank to supply it via the AUTOSCOPE_RESOURCE
-  # env var or a git-ignored config.local.yaml (keeps the serial out of git).
-  resource:
+  # VISA resource string for the scope. Set once here and both scripts use it —
+  # no AUTOSCOPE_RESOURCE env var needed. (To keep the serial out of git instead,
+  # blank this and put it in a git-ignored config.local.yaml, or use the env var.)
+  resource: USB0::0x0699::0x0456::C013718::INSTR
   probe_delay_s: 5          # countdown before capture, so you can place probes
 
 channels:
