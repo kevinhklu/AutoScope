@@ -3,7 +3,7 @@
 Scripted, logged, repeatable bench measurements on a Tektronix MDO4054C,
 replacing manual cursor reads.
 
-> **Status: prototype. NOT qualified.** 
+> **Status: prototype.** 
 
 ## Install
 
@@ -14,12 +14,9 @@ Also requires **NI-VISA** installed (from ni.com) to talk to the scope
 
 ## Configure
 
-All test settings live in **`config.yaml`** —> channels, bus voltage, threshold
-percentages, and spec limits (which drive PASS/FAIL). Edit that file to point at
-a different board or bus; no code changes needed.
+All test settings are in **`config.yaml`**. Edit that file as needed.
 
-Set the scope's VISA resource string. Keep the serial out of git by using the
-env var or a git-ignored `config.local.yaml`:
+Set the scope's VISA resource string:
 ```
 set AUTOSCOPE_RESOURCE=USB0::0x0699::0x0456::<serial>::INSTR
 ```
@@ -29,12 +26,12 @@ Env overrides: `AUTOSCOPE_RESOURCE`, `AUTOSCOPE_SCL`, `AUTOSCOPE_SDA`,
 
 ## Run
 
-Basic voltage reading (`*IDN?`, `*OPT?`, and a CH1 Vpp):
+Basic measurement reading (`*IDN?`, `*OPT?`, and a CH1 Vpp, V DC, Frequency, etc):
 ```
 python measurements.py
 ```
 
-I2C timing — captures a live transaction, prints SCL levels, SCL fall/high/low
+I2C timing --> captures a live transaction, prints SCL levels, SCL fall/high/low
 times, and per-bit tHD;DAT / tSU;DAT with PASS/FAIL against the configured
 limits, and appends every result to `results/measurements.csv`:
 ```
