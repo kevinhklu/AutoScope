@@ -13,7 +13,7 @@ Also requires **NI-VISA** installed (from ni.com) to talk to the scope
 
 ## Configure
 
-All test settings are in **`config.yaml`**. Edit that file as needed. 
+All test settings are in **`config.yaml`**. Edit that file as needed.
 
 Set the scope's VISA resource string:
 ```
