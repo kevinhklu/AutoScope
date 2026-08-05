@@ -1,7 +1,6 @@
 # AutoScope
 
-Scripted, logged, repeatable bench measurements on a Tektronix MDO4054C,
-replacing manual cursor reads.
+Scripted, logged, repeatable bench measurements on Tektronix MDO4054C and MDO2024B oscilloscope, replacing manual cursor reads.
 
 > **Status: prototype.** 
 

@@ -5,8 +5,8 @@
 scope:
   # VISA resource string. Leave blank to supply it via the AUTOSCOPE_RESOURCE
   # env var or a git-ignored config.local.yaml (keeps the serial out of git).
-  resource:
-  probe_delay_s: 5          # countdown before capture, so you can place probes
+  resource: USB0::0x0699::0x0456::C013718::INSTR 
+  probe_delay_s: 10          # countdown before capture, so you can place probes
 
 channels:
   scl: CH1
