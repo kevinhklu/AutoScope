@@ -57,10 +57,79 @@ _LIMIT_ROWS = (
     ("tsu_dat", "tSU;DAT min (ns)", "min"),
 )
 
-_GREEN = "#2ecc71"
-_RED = "#e74c3c"
+# Monochrome engineering palette — black / white / grays only, no accent hue.
+C_BG = "#ffffff"          # window / plot background
+C_PANEL = "#f4f4f4"       # side panel
+C_FG = "#111111"          # primary text / traces
+C_MUTED = "#707070"       # secondary text
+C_BORDER = "#c4c4c4"      # hairlines / field borders
+C_FIELD = "#ffffff"       # entry background
+C_HOVER = "#ebebeb"
+C_PRIMARY = "#111111"     # filled primary buttons
+C_PRIMARY_HOVER = "#333333"
+C_ERRORBG = "#e2e2e2"     # error strip (monochrome — meaning via shape/weight)
+C_TRACE = "#111111"
+C_TRACE2 = "#666666"
+C_GRID = "#dcdcdc"
+
+# Filled primary buttons (Connect / Acquire / I2C) override the bordered default.
+_PRIMARY_BTN = dict(fg_color=C_PRIMARY, hover_color=C_PRIMARY_HOVER,
+                    text_color=C_BG, border_width=0)
+
 _SETTINGS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "gui_settings.json")
+
+
+def _install_mono_theme():
+    """
+    Mutate CustomTkinter's loaded theme into a flat monochrome one: square
+    corners (corner_radius 0), grayscale fills, hairline borders. Base theme
+    ('blue') is a complete valid dict, so we only overwrite values.
+    """
+    th = ctk.ThemeManager.theme
+
+    def p(c):
+        return [c, c]   # same color in light and dark appearance
+
+    th["CTk"]["fg_color"] = p(C_BG)
+    if "CTkToplevel" in th:
+        th["CTkToplevel"]["fg_color"] = p(C_BG)
+    th["CTkFrame"].update(corner_radius=0, border_width=0, fg_color=p(C_PANEL),
+                          top_fg_color=p(C_PANEL), border_color=p(C_BORDER))
+    th["CTkButton"].update(corner_radius=0, border_width=1, fg_color=p(C_BG),
+                           hover_color=p(C_HOVER), border_color=p(C_BORDER),
+                           text_color=p(C_FG), text_color_disabled=p(C_MUTED))
+    th["CTkLabel"].update(corner_radius=0, fg_color="transparent",
+                          text_color=p(C_FG))
+    th["CTkEntry"].update(corner_radius=0, border_width=1, fg_color=p(C_FIELD),
+                          border_color=p(C_BORDER), text_color=p(C_FG),
+                          placeholder_text_color=p(C_MUTED))
+    th["CTkCheckBox"].update(corner_radius=0, border_width=2, fg_color=p(C_FG),
+                             hover_color=p(C_PRIMARY_HOVER), border_color=p(C_BORDER),
+                             text_color=p(C_FG), text_color_disabled=p(C_MUTED),
+                             checkmark_color=p(C_BG))
+    th["CTkOptionMenu"].update(corner_radius=0, fg_color=p(C_FIELD),
+                               button_color=p(C_BORDER), button_hover_color=p(C_MUTED),
+                               text_color=p(C_FG), text_color_disabled=p(C_MUTED))
+    th["CTkTextbox"].update(corner_radius=0, border_width=1, fg_color=p(C_BG),
+                            border_color=p(C_BORDER), text_color=p(C_FG),
+                            scrollbar_button_color=p(C_BORDER),
+                            scrollbar_button_hover_color=p(C_MUTED))
+    if "CTkScrollableFrame" in th:
+        th["CTkScrollableFrame"]["label_fg_color"] = p(C_PANEL)
+    if "CTkSegmentedButton" in th:
+        th["CTkSegmentedButton"].update(
+            corner_radius=0, border_width=1, fg_color=p(C_PANEL),
+            border_color=p(C_BORDER), selected_color=p("#d5d5d5"),
+            selected_hover_color=p("#c8c8c8"), unselected_color=p(C_PANEL),
+            unselected_hover_color=p(C_HOVER), text_color=p(C_FG),
+            text_color_disabled=p(C_MUTED))
+    if "CTkScrollbar" in th:
+        th["CTkScrollbar"].update(corner_radius=0, button_color=p(C_BORDER),
+                                  button_hover_color=p(C_MUTED))
+    if "DropdownMenu" in th:
+        th["DropdownMenu"].update(fg_color=p(C_FIELD), hover_color=p(C_HOVER),
+                                  text_color=p(C_FG))
 
 
 def _aggregate_measurement(label, vals):
@@ -74,9 +143,7 @@ class AutoScopeApp(ctk.CTk):
         self.title("AutoScope")
         self.geometry("1280x800")
         self.minsize(1024, 700)
-
-        ctk.set_appearance_mode("System")
-        ctk.set_default_color_theme("blue")
+        self.configure(fg_color=C_BG)
 
         self.scope: Optional[Scope] = None
         self._busy = False
@@ -109,12 +176,9 @@ class AutoScopeApp(ctk.CTk):
         plot_frame.grid_rowconfigure(0, weight=1)
         plot_frame.grid_columnconfigure(0, weight=1)
 
-        self.fig = Figure(figsize=(7, 5), dpi=100)
+        self.fig = Figure(figsize=(7, 5), dpi=100, facecolor=C_BG)
         self.ax = self.fig.add_subplot(111)
-        self.ax.set_xlabel("Time (s)")
-        self.ax.set_ylabel("Volts")
-        self.ax.set_title("No capture yet")
-        self.ax.grid(True, alpha=0.3)
+        self._style_axes("No capture yet")
         self.fig.tight_layout()
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
@@ -136,28 +200,31 @@ class AutoScopeApp(ctk.CTk):
         # connection indicator (always visible)
         conn_row = ctk.CTkFrame(side, fg_color="transparent")
         conn_row.pack(fill="x", padx=12, pady=(0, 2))
-        self.conn_dot = ctk.CTkLabel(conn_row, text="●", text_color=_RED,
-                                     font=ctk.CTkFont(size=16))
+        self.conn_dot = ctk.CTkLabel(conn_row, text="○", text_color=C_MUTED,
+                                     font=ctk.CTkFont(size=15))
         self.conn_dot.pack(side="left", padx=(0, 6))
-        self.conn_label = ctk.CTkLabel(conn_row, text="Disconnected", anchor="w")
+        self.conn_label = ctk.CTkLabel(conn_row, text="DISCONNECTED",
+                                       text_color=C_MUTED, anchor="w",
+                                       font=ctk.CTkFont(size=12))
         self.conn_label.pack(side="left")
 
         cbtns = ctk.CTkFrame(side, fg_color="transparent")
         cbtns.pack(fill="x", padx=12, pady=(2, 0))
         self.btn_connect = ctk.CTkButton(cbtns, text="Connect",
-                                         command=self._on_connect)
+                                         command=self._on_connect, **_PRIMARY_BTN)
         self.btn_connect.pack(side="left", expand=True, fill="x", padx=(0, 4))
         self.btn_disconnect = ctk.CTkButton(cbtns, text="Disconnect",
                                             command=self._on_disconnect,
                                             state="disabled")
         self.btn_disconnect.pack(side="left", expand=True, fill="x", padx=(4, 0))
 
-        self.conn_error = ctk.CTkLabel(side, text="", text_color=_RED,
-                                       wraplength=360, anchor="w", justify="left")
-        self.conn_error.pack(fill="x", padx=12)
+        self.conn_error = ctk.CTkLabel(side, text="", text_color=C_FG,
+                                       wraplength=356, anchor="w", justify="left")
+        self.conn_error.pack(fill="x", padx=12, pady=(2, 0))
 
-        self.status = ctk.CTkLabel(side, text="", wraplength=360, justify="left",
-                                   anchor="w", text_color="gray")
+        self.status = ctk.CTkLabel(side, text="", wraplength=356, justify="left",
+                                   anchor="w", text_color=C_MUTED,
+                                   font=ctk.CTkFont(size=12))
         self.status.pack(fill="x", padx=12, pady=(2, 4))
 
         # tabbed settings
@@ -227,8 +294,8 @@ class AutoScopeApp(ctk.CTk):
             self.meas_vars[label] = var
             ctk.CTkCheckBox(p, text=label, variable=var).pack(anchor="w", pady=1)
 
-        self.measure_error = ctk.CTkLabel(p, text="", text_color=_RED,
-                                          wraplength=320, anchor="w", justify="left")
+        self.measure_error = ctk.CTkLabel(p, text="", text_color=C_FG,
+                                          wraplength=300, anchor="w", justify="left")
         self.measure_error.pack(fill="x", pady=(6, 0))
         self.btn_acquire = self._action_button(p, "Acquire & Measure",
                                                self._on_acquire)
@@ -275,13 +342,14 @@ class AutoScopeApp(ctk.CTk):
                                     else default))
             self._limit_entries[key] = (entry, bound)
 
-        self.i2c_error = ctk.CTkLabel(p, text="", text_color=_RED,
-                                      wraplength=320, anchor="w", justify="left")
+        self.i2c_error = ctk.CTkLabel(p, text="", text_color=C_FG,
+                                      wraplength=300, anchor="w", justify="left")
         self.i2c_error.pack(fill="x", pady=(6, 0))
         self.btn_i2c = self._action_button(p, "I2C Capture", self._on_i2c)
 
     def _action_button(self, parent, text, command) -> ctk.CTkButton:
-        btn = ctk.CTkButton(parent, text=text, command=command, state="disabled")
+        btn = ctk.CTkButton(parent, text=text, command=command, state="disabled",
+                            **_PRIMARY_BTN)
         btn.pack(fill="x", pady=(3, 8))
         self._action_btns.append(btn)
         return btn
@@ -415,15 +483,18 @@ class AutoScopeApp(ctk.CTk):
 
     # --- small ui helpers ------------------------------------------------
     def _show_error(self, label, msg):
-        label.configure(text=msg)
+        # Monochrome: meaning conveyed by a filled gray strip, not a hue.
+        label.configure(text=f"  {msg}", fg_color=C_ERRORBG)
 
     def _clear_error(self, label):
-        label.configure(text="")
+        label.configure(text="", fg_color="transparent")
 
     def _set_connected(self, connected: bool):
-        self.conn_dot.configure(text_color=_GREEN if connected else _RED)
+        self.conn_dot.configure(text="●" if connected else "○",
+                                text_color=C_FG if connected else C_MUTED)
         self.conn_label.configure(
-            text="Connected" if connected else "Disconnected")
+            text="CONNECTED" if connected else "DISCONNECTED",
+            text_color=C_FG if connected else C_MUTED)
 
     # --- auto-detect -----------------------------------------------------
     def _autodetect_if_empty(self):
@@ -679,32 +750,38 @@ class AutoScopeApp(ctk.CTk):
         self._save_settings()
 
     # --- plotting / results ----------------------------------------------
+    def _style_axes(self, title):
+        self.ax.set_facecolor(C_BG)
+        self.ax.set_axisbelow(True)   # grid behind traces
+        self.ax.set_title(title, color=C_FG)
+        self.ax.set_xlabel("Time (s)", color=C_FG)
+        self.ax.set_ylabel("Volts", color=C_FG)
+        self.ax.grid(True, color=C_GRID, linewidth=0.6)
+        for spine in self.ax.spines.values():
+            spine.set_color(C_BORDER)
+        self.ax.tick_params(colors=C_FG, labelcolor=C_FG)
+
     def _plot_single(self, times, volts, channel, title=None):
         self.ax.clear()
-        self.ax.plot(times, volts, color="#1f77b4", linewidth=0.8, label=channel)
-        self.ax.set_xlabel("Time (s)")
-        self.ax.set_ylabel("Volts")
-        self.ax.set_title(title or f"{channel} waveform")
-        self.ax.grid(True, alpha=0.3)
-        self.ax.legend(loc="upper right")
+        self.ax.plot(times, volts, color=C_TRACE, linewidth=0.9, label=channel)
+        self._style_axes(title or f"{channel} waveform")
+        self.ax.legend(loc="upper right", framealpha=0.9, edgecolor=C_BORDER)
         self.fig.tight_layout()
         self.canvas.draw_idle()
 
     def _plot_i2c(self, result: I2CAnalysisResult):
         self.ax.clear()
-        self.ax.plot(result.scl_t, result.scl_v, color="#1f77b4",
-                     linewidth=0.8, label="SCL")
-        self.ax.plot(result.sda_t, result.sda_v, color="#ff7f0e",
-                     linewidth=0.8, label="SDA")
-        self.ax.axhline(result.high_v, color="gray", linestyle="--",
-                        linewidth=0.8, label=f"high {result.high_v:.2f} V")
-        self.ax.axhline(result.low_v, color="gray", linestyle=":",
-                        linewidth=0.8, label=f"low {result.low_v:.2f} V")
-        self.ax.set_xlabel("Time (s)")
-        self.ax.set_ylabel("Volts")
-        self.ax.set_title("I2C capture (SCL / SDA)")
-        self.ax.grid(True, alpha=0.3)
-        self.ax.legend(loc="upper right", fontsize=8)
+        self.ax.plot(result.scl_t, result.scl_v, color=C_TRACE,
+                     linewidth=0.9, label="SCL")
+        self.ax.plot(result.sda_t, result.sda_v, color=C_TRACE2,
+                     linewidth=0.9, linestyle="--", label="SDA")
+        self.ax.axhline(result.high_v, color=C_MUTED, linestyle="--",
+                        linewidth=0.7, label=f"high {result.high_v:.2f} V")
+        self.ax.axhline(result.low_v, color=C_MUTED, linestyle=":",
+                        linewidth=0.7, label=f"low {result.low_v:.2f} V")
+        self._style_axes("I2C capture (SCL / SDA)")
+        self.ax.legend(loc="upper right", fontsize=8, framealpha=0.9,
+                       edgecolor=C_BORDER)
         self.fig.tight_layout()
         self.canvas.draw_idle()
 
@@ -795,6 +872,9 @@ class AutoScopeApp(ctk.CTk):
 
 
 def main():
+    ctk.set_appearance_mode("light")
+    ctk.set_default_color_theme("blue")   # complete base theme...
+    _install_mono_theme()                 # ...mutated to flat monochrome
     app = AutoScopeApp()
     app.mainloop()
 
