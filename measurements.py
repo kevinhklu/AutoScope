@@ -58,26 +58,3 @@ def period(scope: Scope, source: str = "CH1") -> Measurement:
 def dutycycle(scope: Scope, source: str = "CH1") -> Measurement:
     return immediate_single_source(scope, "PDUty", source)
 
-
-
-
-if __name__ == "__main__":
-    from config import load_config
-
-    cfg = load_config()          # resource comes from config.yaml (or env / local)
-    ch = cfg.scl
-    with Scope(cfg.resource) as s:
-        print("IDN :", s.idn())
-        v_pp = vpp(s, ch)
-        v_dc = vmean(s, ch)
-        f = frequency(s, ch)
-        p = period(s, ch)
-        d = dutycycle(s, ch)
-
-        print(f"Vpp : {v_pp.value} {v_pp.units}  valid={v_pp.valid} {v_pp.note}")
-        print(f"V DC: {v_dc.value} {v_dc.units}  valid={v_dc.valid} {v_dc.note}")
-        print(f"Frequency: {f.value} {f.units}  valid={f.valid} {f.note}")
-        print(f"Period: {p.value} {p.units}  valid={p.valid} {p.note}")
-        print(f"Duty Cycle: {d.value} {d.units}  valid={d.valid} {d.note}")
-
-

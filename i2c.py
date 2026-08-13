@@ -1,24 +1,16 @@
 """
 i2c.py — capture and sanity-check a real I2C transaction (no DPOEMBD decode).
 
-This unit has NO serial-bus decode option, so we trigger on SCL activity to
-land on an actual transaction, then read levels straight off the raw waveform.
-This step just proves we can reliably CATCH traffic and that both lines are
-on-screen and DC-coupled — timing (tHD;DAT / tSU;DAT) comes next.
-
-Bench machine only (needs NI-VISA + scope). Configure via env vars:
-    set AUTOSCOPE_RESOURCE=USB0::0x0699::0x0456::C013718::INSTR
-    set AUTOSCOPE_SCL=CH1
-    set AUTOSCOPE_SDA=CH2
-    set AUTOSCOPE_VDD=1.8
-Run:  py i2c.py
+Trigger on SCL activity, read levels and timing from the captured frame.
+Used by gui.py; all settings come from the GUI.
 """
 
 import time
+from dataclasses import dataclass
 
 from scope_interface import Scope, NoBusActivity
 from measurements import read_measurement
-from config import load_config
+from config import Config
 from results_log import ResultLogger
 
 
@@ -43,18 +35,6 @@ def find_crossings(times, volts, level):
 
 
 def hold_times(scl_t, scl_v, sda_t, sda_v, vdd, high_frac=0.70, low_frac=0.30):
-    """
-    tHD;DAT per data bit: from the SCL 30% FALLING edge to the moment SDA next
-    starts changing. The SDA endpoint is the FIRST crossing of *either* 30% or
-    70% after the SCL edge — which automatically selects 70% for a falling SDA
-    and 30% for a rising SDA (i.e. the threshold nearest the level it's leaving).
-    Only SDA changes before the next SCL falling edge count, so an unchanged bit
-    isn't mis-paired with a far-away transition.
-
-    NOTE (confirm with your team): this encodes "30% or 70% = whichever the
-    edge reaches first". If your convention is the opposite (the far threshold),
-    swap to the LAST crossing before the next SCL fall instead of the first.
-    """
     lo, hi = low_frac * vdd, high_frac * vdd
     scl_falls = sorted(t for t, d in find_crossings(scl_t, scl_v, lo) if d == "fall")
     sda_events = sorted(
@@ -96,13 +76,20 @@ def setup_times(scl_t, scl_v, sda_t, sda_v, vdd, high_frac=0.70, low_frac=0.30):
 def data_timing(scope, scl, sda, vdd, high_frac=0.70, low_frac=0.30):
     """
     Read SCL+SDA waveforms from the captured frame and compute per-bit
-    tHD;DAT and tSU;DAT. Returns {'thd': [...], 'tsu': [...]} in seconds.
+    tHD;DAT and tSU;DAT.
+
+    Returns dict with 'thd'/'tsu' (lists of seconds) plus the raw waveforms
+    under 'scl_t'/'scl_v'/'sda_t'/'sda_v' for plotting.
     """
     scl_t, scl_v = scope.read_waveform(scl)
     sda_t, sda_v = scope.read_waveform(sda)
     return {
         "thd": hold_times(scl_t, scl_v, sda_t, sda_v, vdd, high_frac, low_frac),
         "tsu": setup_times(scl_t, scl_v, sda_t, sda_v, vdd, high_frac, low_frac),
+        "scl_t": scl_t,
+        "scl_v": scl_v,
+        "sda_t": sda_t,
+        "sda_v": sda_v,
     }
 
 
@@ -154,6 +141,7 @@ def capture_transaction(scope, scl, sda, vdd, wait_ms=5000):
     Returns a dict of Measurements. Raises NoBusActivity if the bus is idle.
     """
     # Trigger at ~half the rail — comfortably between LOW (~0) and HIGH (~Vdd).
+    scope.ensure_channel_on(sda)
     scope.triggered_single(source=scl, slope="FALL", level=vdd / 2.0,
                            wait_ms=wait_ms)
     # Read from the CAPTURED frame — do NOT re-acquire (would lose the frame).
@@ -165,76 +153,125 @@ def capture_transaction(scope, scl, sda, vdd, wait_ms=5000):
     }
 
 
-def _report(logger, cfg, name, limit_key, value_s, note=""):
-    """Print one measurement with PASS/FAIL and log it. value_s in seconds."""
+@dataclass
+class TimingResult:
+    """One logged timing measurement with PASS/FAIL against config limits."""
+    name: str
+    value_s: float | None
+    status: str
+    limit_min_ns: float | None = None
+    limit_max_ns: float | None = None
+    note: str = ""
+
+
+@dataclass
+class I2CAnalysisResult:
+    """Full I2C capture outcome for CLI printout or GUI display."""
+    levels: dict
+    timings: list
+    scl_t: list
+    scl_v: list
+    sda_t: list
+    sda_v: list
+    high_v: float
+    low_v: float
+
+
+def _record(logger, cfg, name, limit_key, value_s, note=""):
+    """Log one timing measurement; return a TimingResult. value_s in seconds."""
     if value_s is None:
-        print(f"  {name:9s}: INVALID ({note})")
-        logger.log(name, None, status="INVALID", note=note)
-        return
+        logger.log(name, None, units="ns", status="INVALID", note=note)
+        return TimingResult(name, None, "INVALID", note=note)
     chk = cfg.evaluate(limit_key, value_s)
-    tag = "" if chk.status == "NO LIMIT" else f"  [{chk.status}]"
-    print(f"  {name:9s}: {value_s * 1e9:8.1f} ns{tag}")
-    logger.log(name, value_s * 1e9, status=chk.status,
+    logger.log(name, value_s * 1e9, units="ns", status=chk.status,
                limit_min_ns=chk.min_ns, limit_max_ns=chk.max_ns, note=note)
+    return TimingResult(name, value_s, chk.status,
+                        limit_min_ns=chk.min_ns, limit_max_ns=chk.max_ns,
+                        note=note)
 
 
-if __name__ == "__main__":
-    cfg = load_config()
-    logger = ResultLogger()
+def _probe_countdown(seconds, on_status=None):
+    """Block for probe placement; optional on_status(str) for GUI progress."""
+    if seconds <= 0:
+        return
+    total = int(seconds)
+    for remaining in range(total, 0, -1):
+        msg = f"Probe now — capturing in {remaining} s..."
+        if on_status:
+            on_status(msg)
+        else:
+            print(f"  {remaining}...", end="", flush=True)
+        time.sleep(1)
+    if on_status:
+        on_status("Capturing I2C transaction...")
+    else:
+        print(" capturing.")
+
+
+def run_i2c_analysis(scope, cfg, logger, *, wait_ms=5000, on_status=None,
+                     do_probe_delay=True):
+    """
+    Triggered I2C capture + levels + SCL/data timing on one frame.
+
+    Raises NoBusActivity if no edge arrives. Returns I2CAnalysisResult with
+    waveforms for plotting. Shared by CLI (`python i2c.py`) and the GUI.
+    """
     hf, lf = cfg.high_pct / 100.0, cfg.low_pct / 100.0
 
-    print(f"SCL={cfg.scl}  SDA={cfg.sda}  Vdd={cfg.vdd} V  "
-          f"(trigger level {cfg.vdd/2:.2f} V)   log -> {logger.path}")
-    with Scope(cfg.resource) as s:
-        print("IDN :", s.idn())
+    if do_probe_delay and cfg.probe_delay_s > 0:
+        if on_status is None:
+            print(f"\nProbe now — capturing in {int(cfg.probe_delay_s)} s:")
+        _probe_countdown(cfg.probe_delay_s, on_status=on_status)
+    elif on_status:
+        on_status("Capturing I2C transaction...")
 
-        # Give the operator time to get probes on the board before capture.
-        if cfg.probe_delay_s > 0:
-            print(f"\nProbe now — capturing in {int(cfg.probe_delay_s)} s "
-                  f"(scope.probe_delay_s / AUTOSCOPE_DELAY to change):")
-            for remaining in range(int(cfg.probe_delay_s), 0, -1):
-                print(f"  {remaining}...", end="", flush=True)
-                time.sleep(1)
-            print(" capturing.")
+    levels = capture_transaction(scope, cfg.scl, cfg.sda, cfg.vdd,
+                                 wait_ms=wait_ms)
 
-        try:
-            results = capture_transaction(s, cfg.scl, cfg.sda, cfg.vdd)
-        except NoBusActivity as e:
-            raise SystemExit(f"\nNo transaction captured: {e}\n"
-                             "Make sure the board is actively driving the bus,\n"
-                             "and that SCL/SDA channel assignment is correct.")
-        print("\nCaptured a transaction. Levels on the captured frame:")
-        for name, m in results.items():
-            v = f"{m.value:.3f} {m.units}" if m.valid else f"INVALID ({m.note})"
-            print(f"  {name:9s}: {v}")
+    if on_status:
+        on_status("Reading SCL timing...")
 
-        # SCL timing on that SAME captured frame (no re-acquire).
-        print(f"\nSCL timing ({cfg.high_pct:.0f}% = {cfg.high_v:.2f} V, "
-              f"{cfg.low_pct:.0f}% = {cfg.low_v:.2f} V):")
-        scl_results = [
-            ("Tscl_fall", "tscl_fall", scl_fall_time(s, cfg.scl, cfg.vdd, hf, lf)),
-            ("Tscl_high", "scl_high",  scl_high_time(s, cfg.scl, cfg.vdd, hf)),
-            ("Tscl_low",  "scl_low",   scl_low_time(s, cfg.scl, cfg.vdd, lf)),
-        ]
-        for label, key, m in scl_results:
-            _report(logger, cfg, label, key, m.value,
-                    note="" if m.valid else m.note)
+    # Absolute refs for fall/high/low — ensure SDA is on for later waveform read.
+    scope.ensure_channel_on(cfg.sda)
 
-        # I2C data timing from the raw waveforms of the SAME captured frame.
-        print("\nI2C data timing (per bit, worst = tightest margin):")
-        dt = data_timing(s, cfg.scl, cfg.sda, cfg.vdd, hf, lf)
-        for label, limit_key, key in (("tHD;DAT", "thd_dat", "thd"),
-                                      ("tSU;DAT", "tsu_dat", "tsu")):
-            vals = dt[key]
-            if vals:
-                allns = ", ".join(f"{v * 1e9:.1f}" for v in vals)
-                _report(logger, cfg, label, limit_key, min(vals),
-                        note=f"worst-case of n={len(vals)}: {allns} ns")
-            else:
-                msg = "no measurable SDA transitions (fix SDA scaling / widen timebase)"
-                print(f"  {label}: {msg}")
-                logger.log(label, None, status="INVALID", note=msg)
+    timings = []
+    scl_meas = [
+        ("Tscl_fall", "tscl_fall",
+         scl_fall_time(scope, cfg.scl, cfg.vdd, hf, lf)),
+        ("Tscl_high", "scl_high",
+         scl_high_time(scope, cfg.scl, cfg.vdd, hf)),
+        ("Tscl_low", "scl_low",
+         scl_low_time(scope, cfg.scl, cfg.vdd, lf)),
+    ]
+    for label, key, m in scl_meas:
+        timings.append(_record(logger, cfg, label, key, m.value,
+                               note="" if m.valid else m.note))
 
-        print(f"\nLogged {logger.run_id} to {logger.path}")
-        print("Sanity check: HIGH ~= Vdd, LOW ~= 0. If HIGH is well below Vdd\n"
-              "or a reading is INVALID, the line may be off-screen or mis-scaled.")
+    if on_status:
+        on_status("Computing tHD;DAT / tSU;DAT...")
+
+    dt = data_timing(scope, cfg.scl, cfg.sda, cfg.vdd, hf, lf)
+    for label, limit_key, key in (("tHD;DAT", "thd_dat", "thd"),
+                                  ("tSU;DAT", "tsu_dat", "tsu")):
+        vals = dt[key]
+        if vals:
+            allns = ", ".join(f"{v * 1e9:.1f}" for v in vals)
+            timings.append(_record(
+                logger, cfg, label, limit_key, min(vals),
+                note=f"worst-case of n={len(vals)}: {allns} ns"))
+        else:
+            msg = ("no measurable SDA transitions "
+                   "(fix SDA scaling / widen timebase)")
+            timings.append(_record(logger, cfg, label, limit_key, None,
+                                   note=msg))
+
+    return I2CAnalysisResult(
+        levels=levels,
+        timings=timings,
+        scl_t=dt["scl_t"],
+        scl_v=dt["scl_v"],
+        sda_t=dt["sda_t"],
+        sda_v=dt["sda_v"],
+        high_v=cfg.high_v,
+        low_v=cfg.low_v,
+    )

@@ -54,12 +54,20 @@ class Scope:
     def restore_live(self) -> None:
         """
         Return the scope to continuous, free-running, AUTO-triggered
-        acquisition — i.e. the normal front-panel 'Run' state. Call this after
-        any scripted single/triggered acquisition so the display keeps updating
-        for whoever is standing at the bench.
+        acquisition — i.e. the normal front-panel 'Run' state.
+
+        Must reset STOPAfter to RUNSTop: after a scripted SEQuence the scope
+        stays in single-sequence mode, so front-panel Run only arms one more
+        single shot. Combined with NORMAL trigger (no edge), the display looks
+        dead until Default Setup. Also put trigger back to AUTO and measurement
+        ref levels back to percent so the bench behaves as before the script.
         """
+        self.write("ACQuire:STATE STOP")
+        self.write("TRIGger:A:TYPe EDGE")
         self.write("TRIGger:A:MODe AUTO")
         self.write("ACQuire:STOPAfter RUNSTop")   # continuous, not single
+        # Absolute refs were set for I2C timing; percent is the front-panel default.
+        self.write("MEASUrement:REFLevel:METHod PERCent")
         self.write("ACQuire:STATE RUN")
 
     # --- primitives ------------------------------------------------------
@@ -77,6 +85,10 @@ class Scope:
         # *OPT? is the SCPI-standard installed-options query.
         return self.query("*OPT?")
 
+    def ensure_channel_on(self, source: str) -> None:
+        """Turn on a channel's display so acquisitions/measurements see it."""
+        self.write(f"SELect:{source} ON")
+
     # --- the deterministic acquisition path ------------------------------
     def single_acquisition(self) -> None:
         """
@@ -91,8 +103,11 @@ class Scope:
         In NORMAL mode the scope waits forever for a qualifying edge, and with
         no trigger *OPC? blocks until the VISA timeout (VI_ERROR_TMO).
         """
+        self.write("ACQuire:STATE STOP")
+        self.write("TRIGger:A:TYPe EDGE")
         self.write("TRIGger:A:MODe AUTO")
         self.write("ACQuire:STOPAfter SEQuence")
+        self.write("*CLS")                        # clear OPC so *OPC? waits on THIS acq
         self.write("ACQuire:STATE RUN")
         self.query("*OPC?")   # blocks; ensure self.timeout_ms > acquisition time
 
@@ -114,29 +129,39 @@ class Scope:
         Raises NoBusActivity (not a raw VISA timeout) if no edge arrives in
         wait_ms — i.e. the bus was idle the whole time.
         """
-        self.write("TRIGger:A:MODe NORMal")
+        # Stop before reprogramming trigger — changing trigger while RUNning is
+        # unreliable on MDO4000 and can leave a half-armed single sequence.
+        self.write("ACQuire:STATE STOP")
+        self.ensure_channel_on(source)
         self.write("TRIGger:A:TYPe EDGE")
+        self.write("TRIGger:A:EDGE:COUPling DC")
         self.write(f"TRIGger:A:EDGE:SOURce {source}")
         self.write(f"TRIGger:A:EDGE:SLOpe {slope}")
         if level is not None:
+            # MDO4000: TRIGger:A:LEVel:CH1 <volts>
             self.write(f"TRIGger:A:LEVel:{source} {level}")
+        self.write("TRIGger:A:MODe NORMal")
         self.write("ACQuire:STOPAfter SEQuence")
+        self.write("*CLS")
         self.write("ACQuire:STATE RUN")
 
+        # Allow wait_ms for the edge, plus a short margin to finish filling the
+        # record after a late trigger (slow time/div needs this).
         prev_timeout = self._inst.timeout
-        self._inst.timeout = wait_ms
+        self._inst.timeout = wait_ms + 2_000
         try:
             self.query("*OPC?")
         except pyvisa.errors.VisaIOError as e:
             if e.error_code == pyvisa.constants.StatusCode.error_timeout:
                 self.write("ACQuire:STATE STOP")   # disarm the dangling sequence
                 raise NoBusActivity(
-                    f"No {slope} edge on {source} within {wait_ms} ms — "
+                    f"No {slope} edge on {source} within ~{wait_ms} ms — "
                     f"bus idle, wrong trigger source/level, or line off-screen."
                 ) from None
             raise
         finally:
             self._inst.timeout = prev_timeout
+
 
     def read_waveform(self, source: str):
         """

@@ -133,44 +133,39 @@ def test_config_and_logging():
     import tempfile
     import os as _os
     import csv as _csv
-    from config import Config, load_config
-    from results_log import ResultLogger
+    from config import Config, DEFAULT_LIMITS
+    from results_log import ResultLogger, resolve_log_path
 
-    # evaluate(): PASS / FAIL / NO LIMIT and threshold voltages.
-    cfg = Config(resource="x", scl="CH1", sda="CH2", vdd=1.8, probe_delay_s=0,
-                 high_pct=70, low_pct=30,
+    cfg = Config(resource="USB::TEST", scl="CH1", sda="CH2", vdd=1.8,
+                 probe_delay_s=0, high_pct=70, low_pct=30,
                  limits={"tsu_dat": {"min_ns": 100}, "tscl_fall": {"max_ns": 300}})
     assert cfg.evaluate("tsu_dat", 388e-9).status == "PASS"
-    assert cfg.evaluate("tsu_dat", 50e-9).status == "FAIL"       # below min
-    assert cfg.evaluate("tscl_fall", 400e-9).status == "FAIL"    # above max
-    assert cfg.evaluate("thd_dat", 10e-9).status == "NO LIMIT"   # no limit defined
+    assert cfg.evaluate("tsu_dat", 50e-9).status == "FAIL"
+    assert cfg.evaluate("tscl_fall", 400e-9).status == "FAIL"
+    assert cfg.evaluate("thd_dat", 10e-9).status == "NO LIMIT"
     assert abs(cfg.high_v - 1.26) < 1e-9 and abs(cfg.low_v - 0.54) < 1e-9
+    assert DEFAULT_LIMITS["tsu_dat"]["min_ns"] == 100
 
     d = tempfile.mkdtemp()
-    cfgpath = _os.path.join(d, "config.yaml")
-    with open(cfgpath, "w") as f:
-        f.write("scope: {resource: BASE, probe_delay_s: 5}\n"
-                "channels: {scl: CH1, sda: CH2}\n"
-                "bus: {vdd: 1.8}\n"
-                "thresholds: {high_pct: 70, low_pct: 30}\n"
-                "limits: {tsu_dat: {min_ns: 100}}\n")
-    _os.environ["AUTOSCOPE_VDD"] = "3.3"                          # env override
-    try:
-        loaded = load_config(cfgpath)
-    finally:
-        del _os.environ["AUTOSCOPE_VDD"]
-    assert loaded.resource == "BASE"
-    assert loaded.vdd == 3.3 and abs(loaded.high_v - 2.31) < 1e-9
+    path = resolve_log_path("run1.csv")
+    assert path.endswith("run1.csv")
+    assert _os.path.basename(path) == "run1.csv"
 
-    # ResultLogger writes a header once, then a data row.
-    logpath = _os.path.join(d, "results", "m.csv")
-    log = ResultLogger(logpath)
-    log.log("Tscl_fall", 19.8, status="PASS", limit_max_ns=300)
-    with open(logpath) as f:
+    log = ResultLogger(_os.path.join(d, "m.csv"))
+    log.log("Tscl_fall", 19.8, units="ns", status="PASS", limit_max_ns=300)
+    with open(log.path) as f:
         rows = list(_csv.reader(f))
     assert rows[0][0] == "timestamp"
-    assert rows[1][2] == "Tscl_fall" and rows[1][6] == "PASS"
-    print("PASS config+logging: evaluate, env override, CSV header+row")
+    assert rows[1][2] == "Tscl_fall" and rows[1][7] == "PASS"
+
+    # Append to existing file — header written once, second row added.
+    log2 = ResultLogger(log.path)
+    log2.log("Vpp (CH1)", 3.3, units="V", status="OK")
+    with open(log.path) as f:
+        rows = list(_csv.reader(f))
+    assert len(rows) == 3
+    assert rows[2][2] == "Vpp (CH1)"
+    print("PASS config+logging: evaluate, resolve path, CSV append")
 
 
 def test_read_measurement_does_not_acquire():
