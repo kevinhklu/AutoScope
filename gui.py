@@ -1,14 +1,18 @@
 """
 gui.py — CustomTkinter + matplotlib front end for AutoScope.
 
-All bench settings (scope resource, bus voltage, limits, CSV log name) are
-entered in the GUI. VISA work runs on a worker thread.
+Layout: a waveform plot on the left; a right panel with an always-visible
+connection indicator + Connect/Disconnect, tabbed settings (Setup / Measure /
+I2C), and a results area. Last-used settings persist to gui_settings.json.
+VISA work runs on a worker thread.
 
 Run:  python gui.py
 """
 
 from __future__ import annotations
 
+import json
+import os
 import queue
 import threading
 import traceback
@@ -44,11 +48,6 @@ _CHANNELS = ("CH1", "CH2", "CH3", "CH4")
 _AGG = {"Vpp": max, "Vmax": max, "Vmin": min}
 _AGG_NAME = {"Vpp": "max", "Vmax": "max", "Vmin": "min"}
 
-
-def _aggregate_measurement(label, vals):
-    fn = _AGG.get(label)
-    return fn(vals) if fn is not None else sum(vals) / len(vals)
-
 # limit_key, label, which bound ("min" or "max")
 _LIMIT_ROWS = (
     ("tscl_fall", "Tscl fall max (ns)", "max"),
@@ -58,13 +57,23 @@ _LIMIT_ROWS = (
     ("tsu_dat", "tSU;DAT min (ns)", "min"),
 )
 
+_GREEN = "#2ecc71"
+_RED = "#e74c3c"
+_SETTINGS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "gui_settings.json")
+
+
+def _aggregate_measurement(label, vals):
+    fn = _AGG.get(label)
+    return fn(vals) if fn is not None else sum(vals) / len(vals)
+
 
 class AutoScopeApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("AutoScope")
-        self.geometry("1280x780")
-        self.minsize(1024, 680)
+        self.geometry("1280x800")
+        self.minsize(1024, 700)
 
         ctk.set_appearance_mode("System")
         ctk.set_default_color_theme("blue")
@@ -74,12 +83,13 @@ class AutoScopeApp(ctk.CTk):
         self._closing = False
         self._ui_q: queue.Queue = queue.Queue()
         self._action_btns: list[ctk.CTkButton] = []
-        self._limit_entries: dict[str, ctk.CTkEntry] = {}
+        self._limit_entries: dict[str, tuple] = {}
 
         self._build()
+        self._load_settings()
         self._set_status("Enter settings, then Connect.")
         self.after(100, self._drain_ui_queue)
-        self.after(300, self._on_detect)   # auto-fill the VISA resource on launch
+        self.after(300, self._autodetect_if_empty)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # --- layout ----------------------------------------------------------
@@ -93,6 +103,7 @@ class AutoScopeApp(ctk.CTk):
         main.grid_columnconfigure(1, weight=0)
         main.grid_rowconfigure(0, weight=1)
 
+        # --- plot (left) ---
         plot_frame = tk.Frame(main)
         plot_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         plot_frame.grid_rowconfigure(0, weight=1)
@@ -113,29 +124,65 @@ class AutoScopeApp(ctk.CTk):
         self.toolbar = NavigationToolbar2Tk(self.canvas, toolbar_host)
         self.toolbar.update()
 
-        side = ctk.CTkFrame(main, width=360)
+        # --- side panel (right) ---
+        side = ctk.CTkFrame(main, width=400)
         side.grid(row=0, column=1, sticky="ns")
         side.grid_propagate(False)
 
-        ctk.CTkLabel(side, text="AutoScope", font=ctk.CTkFont(size=18, weight="bold")
-                     ).pack(anchor="w", padx=12, pady=(12, 4))
+        ctk.CTkLabel(side, text="AutoScope",
+                     font=ctk.CTkFont(size=18, weight="bold")
+                     ).pack(anchor="w", padx=12, pady=(12, 2))
 
-        self.status = ctk.CTkLabel(side, text="", wraplength=320, justify="left",
-                                   anchor="w")
-        self.status.pack(fill="x", padx=12, pady=(0, 6))
+        # connection indicator (always visible)
+        conn_row = ctk.CTkFrame(side, fg_color="transparent")
+        conn_row.pack(fill="x", padx=12, pady=(0, 2))
+        self.conn_dot = ctk.CTkLabel(conn_row, text="●", text_color=_RED,
+                                     font=ctk.CTkFont(size=16))
+        self.conn_dot.pack(side="left", padx=(0, 6))
+        self.conn_label = ctk.CTkLabel(conn_row, text="Disconnected", anchor="w")
+        self.conn_label.pack(side="left")
 
-        scroll = ctk.CTkScrollableFrame(side, width=336, height=520)
-        scroll.pack(fill="both", expand=True, padx=8, pady=4)
+        cbtns = ctk.CTkFrame(side, fg_color="transparent")
+        cbtns.pack(fill="x", padx=12, pady=(2, 0))
+        self.btn_connect = ctk.CTkButton(cbtns, text="Connect",
+                                         command=self._on_connect)
+        self.btn_connect.pack(side="left", expand=True, fill="x", padx=(0, 4))
+        self.btn_disconnect = ctk.CTkButton(cbtns, text="Disconnect",
+                                            command=self._on_disconnect,
+                                            state="disabled")
+        self.btn_disconnect.pack(side="left", expand=True, fill="x", padx=(4, 0))
 
-        self._build_settings(scroll)
+        self.conn_error = ctk.CTkLabel(side, text="", text_color=_RED,
+                                       wraplength=360, anchor="w", justify="left")
+        self.conn_error.pack(fill="x", padx=12)
 
+        self.status = ctk.CTkLabel(side, text="", wraplength=360, justify="left",
+                                   anchor="w", text_color="gray")
+        self.status.pack(fill="x", padx=12, pady=(2, 4))
+
+        # tabbed settings
+        self.tabs = ctk.CTkTabview(side, height=360)
+        self.tabs.pack(fill="x", padx=8, pady=(0, 4))
+        for name in ("Setup", "Measure", "I2C"):
+            self.tabs.add(name)
+        self._build_setup_tab(self.tabs.tab("Setup"))
+        self._build_measure_tab(self.tabs.tab("Measure"))
+        self._build_i2c_tab(self.tabs.tab("I2C"))
+
+        # results (expands to fill remaining space)
         ctk.CTkLabel(side, text="Results", anchor="w").pack(
-            fill="x", padx=12, pady=(4, 0))
-        self.results = ctk.CTkTextbox(side, height=140, wrap="word",
+            fill="x", padx=12, pady=(6, 0))
+        self.results = ctk.CTkTextbox(side, height=200, wrap="word",
                                       font=ctk.CTkFont(family="Consolas", size=11))
         self.results.pack(fill="both", expand=True, padx=12, pady=(4, 12))
         self.results.insert("1.0", "(no results yet)\n")
         self.results.configure(state="disabled")
+
+    @staticmethod
+    def _tab_scroll(tab) -> ctk.CTkScrollableFrame:
+        sf = ctk.CTkScrollableFrame(tab, fg_color="transparent")
+        sf.pack(fill="both", expand=True)
+        return sf
 
     def _labeled_entry(self, parent, label: str, default: str = "") -> ctk.CTkEntry:
         ctk.CTkLabel(parent, text=label, anchor="w").pack(fill="x", pady=(8, 0))
@@ -145,105 +192,164 @@ class AutoScopeApp(ctk.CTk):
             entry.insert(0, default)
         return entry
 
-    def _build_settings(self, parent):
-        ctk.CTkLabel(parent, text="Scope", font=ctk.CTkFont(weight="bold")
+    def _build_setup_tab(self, tab):
+        p = self._tab_scroll(tab)
+        ctk.CTkLabel(p, text="Scope", font=ctk.CTkFont(weight="bold")
                      ).pack(anchor="w", pady=(4, 0))
-        self.resource_entry = self._labeled_entry(parent, "VISA resource", "")
-        self.btn_detect = ctk.CTkButton(parent, text="Auto-detect scope",
+        self.resource_entry = self._labeled_entry(p, "VISA resource", "")
+        self.btn_detect = ctk.CTkButton(p, text="Auto-detect scope",
                                         command=self._on_detect)
-        self.btn_detect.pack(fill="x", pady=(4, 0))
+        self.btn_detect.pack(fill="x", pady=(6, 0))
 
-        conn = ctk.CTkFrame(parent, fg_color="transparent")
-        conn.pack(fill="x", pady=(8, 0))
-        self.btn_connect = ctk.CTkButton(conn, text="Connect", width=150,
-                                         command=self._on_connect)
-        self.btn_connect.pack(side="left", padx=(0, 6))
-        self.btn_disconnect = ctk.CTkButton(conn, text="Disconnect", width=150,
-                                            command=self._on_disconnect,
-                                            state="disabled")
-        self.btn_disconnect.pack(side="left")
-
-        ctk.CTkLabel(parent, text="CSV log", font=ctk.CTkFont(weight="bold")
-                     ).pack(anchor="w", pady=(12, 0))
+        ctk.CTkLabel(p, text="Log file", font=ctk.CTkFont(weight="bold")
+                     ).pack(anchor="w", pady=(14, 0))
         self.csv_entry = self._labeled_entry(
-            parent, "File name (.xlsx, saved under results/)", "measurements.xlsx")
-        ctk.CTkLabel(parent, text="New file → header row. Existing → append. "
+            p, "File name (.xlsx, saved under results/)", "measurements.xlsx")
+        ctk.CTkLabel(p, text="New file -> header row. Existing -> append. "
                      "Close it in Excel before running.",
                      font=ctk.CTkFont(size=11), text_color="gray",
-                     anchor="w", wraplength=300).pack(fill="x")
+                     anchor="w", justify="left", wraplength=320).pack(fill="x")
 
-        ctk.CTkLabel(parent, text="Bus / I2C", font=ctk.CTkFont(weight="bold")
-                     ).pack(anchor="w", pady=(12, 0))
-        self.vdd_entry = self._labeled_entry(parent, "Vdd (V)", "1.8")
-        row_pct = ctk.CTkFrame(parent, fg_color="transparent")
-        row_pct.pack(fill="x", pady=(4, 0))
-        ctk.CTkLabel(row_pct, text="High %").pack(side="left")
-        self.high_pct_entry = ctk.CTkEntry(row_pct, width=60)
-        self.high_pct_entry.pack(side="left", padx=(6, 16))
-        self.high_pct_entry.insert(0, "70")
-        ctk.CTkLabel(row_pct, text="Low %").pack(side="left")
-        self.low_pct_entry = ctk.CTkEntry(row_pct, width=60)
-        self.low_pct_entry.pack(side="left", padx=(6, 0))
-        self.low_pct_entry.insert(0, "30")
-        self.probe_delay_entry = self._labeled_entry(
-            parent, "Probe countdown (s, 0 = off)", "5")
-
-        ctk.CTkLabel(parent, text="I2C limits (ns, blank = no check)",
-                     font=ctk.CTkFont(weight="bold")).pack(anchor="w", pady=(12, 0))
-        for key, label, bound in _LIMIT_ROWS:
-            row = ctk.CTkFrame(parent, fg_color="transparent")
-            row.pack(fill="x", pady=2)
-            ctk.CTkLabel(row, text=label, width=140, anchor="w").pack(side="left")
-            entry = ctk.CTkEntry(row, width=80)
-            entry.pack(side="right")
-            default = DEFAULT_LIMITS.get(key, {}).get(f"{bound}_ns")
-            if default is not None:
-                entry.insert(0, str(int(default) if default == int(default) else default))
-            self._limit_entries[key] = (entry, bound)
-
-        ctk.CTkLabel(parent, text="Acquire / measure", font=ctk.CTkFont(weight="bold")
-                     ).pack(anchor="w", pady=(12, 0))
-        ctk.CTkLabel(parent, text="Channel", anchor="w").pack(fill="x", pady=(4, 0))
+    def _build_measure_tab(self, tab):
+        p = self._tab_scroll(tab)
+        ctk.CTkLabel(p, text="Channel", anchor="w").pack(fill="x", pady=(6, 0))
         self.channel_var = ctk.StringVar(value="CH1")
-        ctk.CTkOptionMenu(parent, variable=self.channel_var,
+        ctk.CTkOptionMenu(p, variable=self.channel_var,
                           values=list(_CHANNELS)).pack(fill="x", pady=2)
 
         self.n_acq_entry = self._labeled_entry(
-            parent, "Acquisitions (N) — reports peak over N", "16")
+            p, "Acquisitions (N) — reports peak over N", "16")
 
-        ctk.CTkLabel(parent, text="Measurements (peak over N acquisitions)",
-                     anchor="w").pack(fill="x", pady=(8, 0))
+        ctk.CTkLabel(p, text="Measurements", anchor="w").pack(fill="x", pady=(10, 0))
         self.meas_vars: dict[str, ctk.BooleanVar] = {}
         for label in _BASIC_MEAS:
             var = ctk.BooleanVar(value=True)
             self.meas_vars[label] = var
-            ctk.CTkCheckBox(parent, text=label, variable=var).pack(anchor="w", pady=1)
+            ctk.CTkCheckBox(p, text=label, variable=var).pack(anchor="w", pady=1)
 
-        ctk.CTkLabel(parent, text="I2C SCL / SDA", anchor="w").pack(
-            fill="x", pady=(8, 0))
-        i2c_row = ctk.CTkFrame(parent, fg_color="transparent")
-        i2c_row.pack(fill="x", pady=2)
-        ctk.CTkLabel(i2c_row, text="SCL").pack(side="left")
+        self.measure_error = ctk.CTkLabel(p, text="", text_color=_RED,
+                                          wraplength=320, anchor="w", justify="left")
+        self.measure_error.pack(fill="x", pady=(6, 0))
+        self.btn_acquire = self._action_button(p, "Acquire & Measure",
+                                               self._on_acquire)
+
+    def _build_i2c_tab(self, tab):
+        p = self._tab_scroll(tab)
+        ctk.CTkLabel(p, text="SCL / SDA", anchor="w").pack(fill="x", pady=(6, 0))
+        row = ctk.CTkFrame(p, fg_color="transparent")
+        row.pack(fill="x", pady=2)
+        ctk.CTkLabel(row, text="SCL").pack(side="left")
         self.scl_var = ctk.StringVar(value="CH1")
-        ctk.CTkOptionMenu(i2c_row, variable=self.scl_var, values=list(_CHANNELS),
+        ctk.CTkOptionMenu(row, variable=self.scl_var, values=list(_CHANNELS),
                           width=90).pack(side="left", padx=(6, 12))
-        ctk.CTkLabel(i2c_row, text="SDA").pack(side="left")
+        ctk.CTkLabel(row, text="SDA").pack(side="left")
         self.sda_var = ctk.StringVar(value="CH2")
-        ctk.CTkOptionMenu(i2c_row, variable=self.sda_var, values=list(_CHANNELS),
+        ctk.CTkOptionMenu(row, variable=self.sda_var, values=list(_CHANNELS),
                           width=90).pack(side="left", padx=(6, 0))
 
-        ctk.CTkLabel(parent, text="Run", font=ctk.CTkFont(weight="bold")
-                     ).pack(anchor="w", pady=(12, 0))
-        self.btn_acquire = self._action_button(
-            parent, "Acquire & Measure", self._on_acquire)
-        self.btn_i2c = self._action_button(
-            parent, "I2C Capture", self._on_i2c)
+        self.vdd_entry = self._labeled_entry(p, "Vdd (V)", "1.8")
+        prow = ctk.CTkFrame(p, fg_color="transparent")
+        prow.pack(fill="x", pady=(4, 0))
+        ctk.CTkLabel(prow, text="High %").pack(side="left")
+        self.high_pct_entry = ctk.CTkEntry(prow, width=60)
+        self.high_pct_entry.pack(side="left", padx=(6, 16))
+        self.high_pct_entry.insert(0, "70")
+        ctk.CTkLabel(prow, text="Low %").pack(side="left")
+        self.low_pct_entry = ctk.CTkEntry(prow, width=60)
+        self.low_pct_entry.pack(side="left", padx=(6, 0))
+        self.low_pct_entry.insert(0, "30")
+        self.probe_delay_entry = self._labeled_entry(
+            p, "Probe countdown (s, 0 = off)", "5")
+
+        ctk.CTkLabel(p, text="Limits (ns, blank = no check)", anchor="w"
+                     ).pack(fill="x", pady=(10, 0))
+        for key, label, bound in _LIMIT_ROWS:
+            r = ctk.CTkFrame(p, fg_color="transparent")
+            r.pack(fill="x", pady=2)
+            ctk.CTkLabel(r, text=label, width=150, anchor="w").pack(side="left")
+            entry = ctk.CTkEntry(r, width=80)
+            entry.pack(side="right")
+            default = DEFAULT_LIMITS.get(key, {}).get(f"{bound}_ns")
+            if default is not None:
+                entry.insert(0, str(int(default) if default == int(default)
+                                    else default))
+            self._limit_entries[key] = (entry, bound)
+
+        self.i2c_error = ctk.CTkLabel(p, text="", text_color=_RED,
+                                      wraplength=320, anchor="w", justify="left")
+        self.i2c_error.pack(fill="x", pady=(6, 0))
+        self.btn_i2c = self._action_button(p, "I2C Capture", self._on_i2c)
 
     def _action_button(self, parent, text, command) -> ctk.CTkButton:
         btn = ctk.CTkButton(parent, text=text, command=command, state="disabled")
-        btn.pack(fill="x", pady=3)
+        btn.pack(fill="x", pady=(3, 8))
         self._action_btns.append(btn)
         return btn
+
+    # --- settings persistence -------------------------------------------
+    def _collect_settings(self) -> dict:
+        return {
+            "resource": self.resource_entry.get(),
+            "log": self.csv_entry.get(),
+            "channel": self.channel_var.get(),
+            "n_acq": self.n_acq_entry.get(),
+            "vdd": self.vdd_entry.get(),
+            "high_pct": self.high_pct_entry.get(),
+            "low_pct": self.low_pct_entry.get(),
+            "probe_delay": self.probe_delay_entry.get(),
+            "scl": self.scl_var.get(),
+            "sda": self.sda_var.get(),
+            "limits": {k: e.get() for k, (e, _b) in self._limit_entries.items()},
+            "measurements": {k: v.get() for k, v in self.meas_vars.items()},
+        }
+
+    def _apply_settings(self, s: dict):
+        def set_entry(entry, val):
+            if val is None:
+                return
+            prev = entry.cget("state")
+            entry.configure(state="normal")
+            entry.delete(0, "end")
+            entry.insert(0, str(val))
+            entry.configure(state=prev)
+
+        set_entry(self.resource_entry, s.get("resource"))
+        set_entry(self.csv_entry, s.get("log"))
+        set_entry(self.n_acq_entry, s.get("n_acq"))
+        set_entry(self.vdd_entry, s.get("vdd"))
+        set_entry(self.high_pct_entry, s.get("high_pct"))
+        set_entry(self.low_pct_entry, s.get("low_pct"))
+        set_entry(self.probe_delay_entry, s.get("probe_delay"))
+        if s.get("channel") in _CHANNELS:
+            self.channel_var.set(s["channel"])
+        if s.get("scl") in _CHANNELS:
+            self.scl_var.set(s["scl"])
+        if s.get("sda") in _CHANNELS:
+            self.sda_var.set(s["sda"])
+        for key, val in (s.get("limits") or {}).items():
+            if key in self._limit_entries:
+                set_entry(self._limit_entries[key][0], val)
+        for label, val in (s.get("measurements") or {}).items():
+            if label in self.meas_vars:
+                self.meas_vars[label].set(bool(val))
+
+    def _load_settings(self):
+        try:
+            with open(_SETTINGS_PATH) as f:
+                s = json.load(f)
+        except (OSError, ValueError):
+            return
+        try:
+            self._apply_settings(s)
+        except Exception:
+            pass   # never let a bad settings file break startup
+
+    def _save_settings(self):
+        try:
+            with open(_SETTINGS_PATH, "w") as f:
+                json.dump(self._collect_settings(), f, indent=2)
+        except OSError:
+            pass
 
     # --- settings parsing ------------------------------------------------
     @staticmethod
@@ -268,7 +374,10 @@ class AutoScopeApp(ctk.CTk):
     def _limits_from_gui(self) -> dict:
         limits = {}
         for key, (entry, bound) in self._limit_entries.items():
-            val = self._parse_optional_float(entry.get())
+            try:
+                val = self._parse_optional_float(entry.get())
+            except ValueError as e:
+                raise ValueError(f"{key} limit must be a number or blank.") from e
             if val is not None:
                 limits[key] = {f"{bound}_ns": val}
         return limits
@@ -302,10 +411,25 @@ class AutoScopeApp(ctk.CTk):
         return ResultLogger(path)
 
     def _set_resource_locked(self, locked: bool):
-        state = "disabled" if locked else "normal"
-        self.resource_entry.configure(state=state)
+        self.resource_entry.configure(state="disabled" if locked else "normal")
+
+    # --- small ui helpers ------------------------------------------------
+    def _show_error(self, label, msg):
+        label.configure(text=msg)
+
+    def _clear_error(self, label):
+        label.configure(text="")
+
+    def _set_connected(self, connected: bool):
+        self.conn_dot.configure(text_color=_GREEN if connected else _RED)
+        self.conn_label.configure(
+            text="Connected" if connected else "Disconnected")
 
     # --- auto-detect -----------------------------------------------------
+    def _autodetect_if_empty(self):
+        if not self.resource_entry.get().strip():
+            self._on_detect()
+
     def _on_detect(self):
         """Fill the resource field with the first connected Tektronix USB scope."""
         try:
@@ -316,6 +440,7 @@ class AutoScopeApp(ctk.CTk):
         if res:
             self.resource_entry.delete(0, "end")
             self.resource_entry.insert(0, res)
+            self._clear_error(self.conn_error)
             self._set_status(f"Detected scope: {res}")
         else:
             self._set_status("No scope found — check USB/power, or type the "
@@ -325,12 +450,13 @@ class AutoScopeApp(ctk.CTk):
     def _on_connect(self):
         if self.scope is not None:
             return
-        try:
-            cfg = self._settings_from_gui()
-        except ValueError as e:
-            self._set_status(str(e))
+        resource = self.resource_entry.get().strip()
+        if not resource:
+            self._show_error(self.conn_error,
+                             "Enter or auto-detect the VISA resource.")
             return
-        self._run_async(lambda: self._connect_worker(cfg.resource),
+        self._clear_error(self.conn_error)
+        self._run_async(lambda: self._connect_worker(resource),
                         on_done=self._after_connect)
 
     def _connect_worker(self, resource: str):
@@ -349,7 +475,7 @@ class AutoScopeApp(ctk.CTk):
 
     def _after_connect(self, result, err):
         if err:
-            self._set_status(f"Connect failed: {err}")
+            self._show_error(self.conn_error, f"Connect failed: {err}")
             return
         s, idn = result
         if self._closing:
@@ -359,11 +485,14 @@ class AutoScopeApp(ctk.CTk):
                 pass
             return
         self.scope = s
+        self._clear_error(self.conn_error)
         self.btn_connect.configure(state="disabled")
         self.btn_disconnect.configure(state="normal")
         self._set_resource_locked(True)
         self._set_action_enabled(True)
+        self._set_connected(True)
         self._set_status(f"Connected: {idn}")
+        self._save_settings()
 
     def _on_disconnect(self):
         self._run_async(self._disconnect_worker, on_done=self._after_disconnect)
@@ -381,6 +510,7 @@ class AutoScopeApp(ctk.CTk):
         self.btn_disconnect.configure(state="disabled")
         self._set_resource_locked(False)
         self._set_action_enabled(False)
+        self._set_connected(False)
 
     def _close_scope(self):
         if self.scope is None:
@@ -397,6 +527,7 @@ class AutoScopeApp(ctk.CTk):
             self._set_status("Finishing scope operation before exit...")
             self.after(100, self._on_close)
             return
+        self._save_settings()
         self._close_scope()
         self.destroy()
 
@@ -415,8 +546,9 @@ class AutoScopeApp(ctk.CTk):
                 raise ValueError("Acquisitions (N) must be at least 1.")
             logger = self._logger_from_gui()
         except ValueError as e:
-            self._set_status(str(e))
+            self._show_error(self.measure_error, str(e))
             return
+        self._clear_error(self.measure_error)
         self._run_async(lambda: self._acquire_worker(ch, selected, logger, n_acq),
                         on_done=self._after_acquire)
 
@@ -482,7 +614,7 @@ class AutoScopeApp(ctk.CTk):
 
     def _after_acquire(self, result, err):
         if err:
-            self._set_status(f"Acquire failed: {err}")
+            self._show_error(self.measure_error, f"Acquire failed: {err}")
             return
         ch = result["channel"]
         logger = result["logger"]
@@ -502,18 +634,20 @@ class AutoScopeApp(ctk.CTk):
                 lines.append(f"  {label}: {value:.6g} {units}{suffix}")
         self._set_results("\n".join(lines) + "\n")
         self._set_status(f"Acquired {ch} ({n_acq}×) — logged to {logger.path}")
+        self._save_settings()
 
     def _on_i2c(self):
         try:
             cfg = self._settings_from_gui()
             logger = self._logger_from_gui()
         except ValueError as e:
-            self._set_status(str(e))
+            self._show_error(self.i2c_error, str(e))
             return
         scl, sda = self.scl_var.get(), self.sda_var.get()
         if scl == sda:
-            self._set_status(f"SCL and SDA must differ (both {scl}).")
+            self._show_error(self.i2c_error, f"SCL and SDA must differ (both {scl}).")
             return
+        self._clear_error(self.i2c_error)
         cfg.scl, cfg.sda = scl, sda
         self._run_async(lambda: self._i2c_worker(cfg, logger),
                         on_done=self._after_i2c)
@@ -533,15 +667,16 @@ class AutoScopeApp(ctk.CTk):
     def _after_i2c(self, payload, err):
         if err:
             if isinstance(err, NoBusActivity):
-                self._set_status(f"No bus activity: {err}")
+                self._show_error(self.i2c_error, f"No bus activity: {err}")
             else:
-                self._set_status(f"I2C capture failed: {err}")
+                self._show_error(self.i2c_error, f"I2C capture failed: {err}")
             return
         result, logger = payload
         assert isinstance(result, I2CAnalysisResult)
         self._plot_i2c(result)
         self._show_i2c_results(result, logger)
         self._set_status(f"I2C done — appended to {logger.path}")
+        self._save_settings()
 
     # --- plotting / results ----------------------------------------------
     def _plot_single(self, times, volts, channel, title=None):
@@ -650,6 +785,7 @@ class AutoScopeApp(ctk.CTk):
                         state="normal" if connected else "disabled")
                     self._set_resource_locked(connected)
                     self._set_action_enabled(connected)
+                    self._set_connected(connected)
                     if err is not None:
                         traceback.print_exception(type(err), err, err.__traceback__)
                     on_done(result, err)

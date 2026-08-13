@@ -15,7 +15,11 @@ env/
 
 # --- Test output (raw bench logs are data, not source) ---
 results/*.csv
+results/*.xlsx
 !results/.gitkeep
 
 # --- Local, machine-specific config (holds the scope serial) ---
 config.local.yaml
+
+# Local GUI settings (last-used fields)
+gui_settings.json
