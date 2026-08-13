@@ -8,6 +8,8 @@ cursor method. No AUTOSet, no free-running reads.
 Adapt open()/close() to match your already-validated connection code.
 """
 
+import time
+
 import pyvisa
 
 TEK_INVALID = 9.9e37
@@ -110,19 +112,34 @@ class Scope:
 
         STOP first: between operations the scope is left free-running
         (restore_live). Arming a single sequence while it is still acquiring
-        makes *OPC? race the in-flight frame — it sometimes returns against a
-        frame that isn't settled for measurement, giving an INTERMITTENT 9.9e37
-        'invalid' on a signal that's clearly on screen. Starting from a known
-        STOPPED state makes each acquisition clean and deterministic.
+        makes the completion gate race the in-flight frame — giving an
+        INTERMITTENT 9.9e37 'invalid' on a signal that's clearly on screen.
+        Starting from a known STOPPED state makes each acquisition clean.
 
-        *OPC? then returns 1 only after the SEQuence finishes, so the follow-on
-        measurement reads a fully-settled, known frame.
+        Then WAIT on the acquisition state rather than *OPC?: on the MDO2000
+        series *OPC? can report complete before the frame is ready to measure,
+        so we poll ACQuire:STATE? until it reports stopped (sequence finished).
         """
         self.write("ACQuire:STATE STOP")
         self.write("TRIGger:A:MODe AUTO")
         self.write("ACQuire:STOPAfter SEQuence")
         self.write("ACQuire:STATE RUN")
-        self.query("*OPC?")   # ensure self.timeout_ms > acquisition time
+        self._wait_acquisition_complete()
+
+    def _wait_acquisition_complete(self, timeout_s: float = 15.0) -> None:
+        """
+        Block until the armed single sequence has finished. Polls ACQuire:STATE?
+        (0 = stopped). The brief initial pause lets STATE RUN take effect so we
+        don't read the pre-run stopped state and return early.
+        """
+        time.sleep(0.1)
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if self.query("ACQuire:STATE?").strip() in ("0", "OFF"):
+                return
+            time.sleep(0.05)
+        raise TimeoutError(
+            f"acquisition did not complete in {timeout_s}s — check trigger/timebase.")
 
     def triggered_single(self, source: str, slope: str = "FALL",
                          level: float | None = None,

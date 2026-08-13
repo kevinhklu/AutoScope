@@ -1,3 +1,4 @@
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -14,15 +15,27 @@ class Measurement:
     note: str = ""
 
 
-def read_measurement(scope: Scope, meas_type: str, source: str) -> Measurement:
+def read_measurement(scope: Scope, meas_type: str, source: str,
+                     retries: int = 0, retry_delay_s: float = 0.1) -> Measurement:
     """
     Read an IMMed measurement from the frame ALREADY in acquisition memory.
-    """
 
+    retries: on the MDO2000 series the measurement processor can lag the
+    acquisition, so a value read a hair too early comes back 9.9e37 invalid.
+    Pass retries>0 (basic amplitude measurements do) to re-read after a short
+    settle. Leave at 0 where an invalid is legitimately expected (e.g. I2C
+    HIGH/LOW on a flat SDA), so those stay fast.
+    """
     scope.write(f"MEASUrement:IMMed:TYPe {meas_type}")
     scope.write(f"MEASUrement:IMMed:SOURCE1 {source}")
 
     raw = float(scope.query("MEASUrement:IMMed:VALue?"))
+    attempt = 0
+    while is_invalid(raw) and attempt < retries:
+        time.sleep(retry_delay_s)
+        raw = float(scope.query("MEASUrement:IMMed:VALue?"))
+        attempt += 1
+
     units = scope.query("MEASUrement:IMMed:UNIts?").strip('"')
 
     if is_invalid(raw):

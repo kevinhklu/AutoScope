@@ -420,7 +420,7 @@ class AutoScopeApp(ctk.CTk):
             self.scope.single_acquisition()
             results = []
             for label, scpi in selected:
-                m = read_measurement(self.scope, scpi, channel)
+                m = read_measurement(self.scope, scpi, channel, retries=3)
                 results.append((label, m))
                 if m.valid:
                     logger.log(f"{label} ({channel})", m.value, units=m.units,
