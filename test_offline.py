@@ -132,7 +132,7 @@ def test_edge_crossings_and_data_timing():
 def test_config_and_logging():
     import tempfile
     import os as _os
-    import csv as _csv
+    from openpyxl import load_workbook
     from config import Config, DEFAULT_LIMITS
     from results_log import ResultLogger, resolve_log_path
 
@@ -146,26 +146,32 @@ def test_config_and_logging():
     assert abs(cfg.high_v - 1.26) < 1e-9 and abs(cfg.low_v - 0.54) < 1e-9
     assert DEFAULT_LIMITS["tsu_dat"]["min_ns"] == 100
 
+    # Any extension is normalized to .xlsx.
+    assert resolve_log_path("run1.csv").endswith("run1.xlsx")
+
     d = tempfile.mkdtemp()
-    path = resolve_log_path("run1.csv")
-    assert path.endswith("run1.csv")
-    assert _os.path.basename(path) == "run1.csv"
+    log = ResultLogger(_os.path.join(d, "m.xlsx"))
+    # Capture 1: three measurements -> three rows, merged capture cell.
+    cap1 = log.log_capture([
+        {"measurement": "Vpp (CH1)", "value": 3.3, "units": "V", "status": "OK"},
+        {"measurement": "Vmax (CH1)", "value": 1.9, "units": "V", "status": "OK"},
+        {"measurement": "Vmin (CH1)", "value": -1.4, "units": "V", "status": "OK"},
+    ])
+    # Capture 2: single measurement -> one row, no merge.
+    cap2 = log.log_capture([
+        {"measurement": "Vpp (CH1)", "value": 3.4, "units": "V", "status": "OK"}])
+    assert cap1 == 1 and cap2 == 2
 
-    log = ResultLogger(_os.path.join(d, "m.csv"))
-    log.log("Tscl_fall", 19.8, units="ns", status="PASS", limit_max_ns=300)
-    with open(log.path) as f:
-        rows = list(_csv.reader(f))
-    assert rows[0][0] == "timestamp"
-    assert rows[1][2] == "Tscl_fall" and rows[1][7] == "PASS"
-
-    # Append to existing file — header written once, second row added.
-    log2 = ResultLogger(log.path)
-    log2.log("Vpp (CH1)", 3.3, units="V", status="OK")
-    with open(log.path) as f:
-        rows = list(_csv.reader(f))
-    assert len(rows) == 3
-    assert rows[2][2] == "Vpp (CH1)"
-    print("PASS config+logging: evaluate, resolve path, CSV append")
+    ws = load_workbook(log.path).active
+    assert ws.cell(row=1, column=1).value == "Capture"          # header
+    assert ws.cell(row=1, column=9).value == "Timestamp"        # ts last col
+    assert ws.cell(row=2, column=1).value == 1                  # capture number
+    assert ws.cell(row=2, column=2).value == "Vpp (CH1)"
+    assert ws.cell(row=3, column=1).value is None               # merged continuation
+    assert ws.cell(row=5, column=1).value == 2                  # next capture
+    merged = {str(r) for r in ws.merged_cells.ranges}
+    assert "A2:A4" in merged and "I2:I4" in merged             # capture + ts merged
+    print("PASS config+logging: evaluate, resolve path, xlsx merged-capture grouping")
 
 
 def test_read_measurement_does_not_acquire():

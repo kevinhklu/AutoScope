@@ -177,17 +177,27 @@ class I2CAnalysisResult:
     low_v: float
 
 
-def _record(logger, cfg, name, limit_key, value_s, note=""):
-    """Log one timing measurement; return a TimingResult. value_s in seconds."""
+def _record(cfg, name, limit_key, value_s, note=""):
+    """Build a TimingResult (with PASS/FAIL vs config limits). value_s seconds."""
     if value_s is None:
-        logger.log(name, None, units="ns", status="INVALID", note=note)
         return TimingResult(name, None, "INVALID", note=note)
     chk = cfg.evaluate(limit_key, value_s)
-    logger.log(name, value_s * 1e9, units="ns", status=chk.status,
-               limit_min_ns=chk.min_ns, limit_max_ns=chk.max_ns, note=note)
     return TimingResult(name, value_s, chk.status,
                         limit_min_ns=chk.min_ns, limit_max_ns=chk.max_ns,
                         note=note)
+
+
+def _timings_to_rows(timings):
+    """Convert TimingResults into log_capture row dicts (values in ns)."""
+    return [{
+        "measurement": t.name,
+        "value": None if t.value_s is None else t.value_s * 1e9,
+        "units": "ns",
+        "status": t.status,
+        "limit_min_ns": t.limit_min_ns,
+        "limit_max_ns": t.limit_max_ns,
+        "note": t.note,
+    } for t in timings]
 
 
 def _probe_countdown(seconds, on_status=None):
@@ -244,7 +254,7 @@ def run_i2c_analysis(scope, cfg, logger, *, wait_ms=5000, on_status=None,
          scl_low_time(scope, cfg.scl, cfg.vdd, lf)),
     ]
     for label, key, m in scl_meas:
-        timings.append(_record(logger, cfg, label, key, m.value,
+        timings.append(_record(cfg, label, key, m.value,
                                note="" if m.valid else m.note))
 
     if on_status:
@@ -257,13 +267,15 @@ def run_i2c_analysis(scope, cfg, logger, *, wait_ms=5000, on_status=None,
         if vals:
             allns = ", ".join(f"{v * 1e9:.1f}" for v in vals)
             timings.append(_record(
-                logger, cfg, label, limit_key, min(vals),
+                cfg, label, limit_key, min(vals),
                 note=f"worst-case of n={len(vals)}: {allns} ns"))
         else:
             msg = ("no measurable SDA transitions "
                    "(fix SDA scaling / widen timebase)")
-            timings.append(_record(logger, cfg, label, limit_key, None,
-                                   note=msg))
+            timings.append(_record(cfg, label, limit_key, None, note=msg))
+
+    # Log the whole capture as one group (merged capture number + timestamp).
+    logger.log_capture(_timings_to_rows(timings))
 
     return I2CAnalysisResult(
         levels=levels,

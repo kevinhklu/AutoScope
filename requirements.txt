@@ -2,6 +2,7 @@
 pyvisa
 customtkinter
 matplotlib
+openpyxl
 
 # IMPORTANT: pyvisa is only the Python front end. It needs a VISA driver
 # underneath, which is NOT a pip package:

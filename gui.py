@@ -166,8 +166,9 @@ class AutoScopeApp(ctk.CTk):
         ctk.CTkLabel(parent, text="CSV log", font=ctk.CTkFont(weight="bold")
                      ).pack(anchor="w", pady=(12, 0))
         self.csv_entry = self._labeled_entry(
-            parent, f"File name (saved under results/)", "measurements.csv")
-        ctk.CTkLabel(parent, text="New file → header row. Existing → append.",
+            parent, "File name (.xlsx, saved under results/)", "measurements.xlsx")
+        ctk.CTkLabel(parent, text="New file → header row. Existing → append. "
+                     "Close it in Excel before running.",
                      font=ctk.CTkFont(size=11), text_color="gray",
                      anchor="w", wraplength=300).pack(fill="x")
 
@@ -450,21 +451,28 @@ class AutoScopeApp(ctk.CTk):
 
             # Aggregate: peak-type measurements keep the worst-case extreme.
             results = []
+            log_rows = []
             for label, _scpi in selected:
                 vals = collected[label]
                 u = units[label]
                 if not vals:
                     note = f"no valid reading in {n_acq} acq"
                     results.append((label, None, u, note))
-                    logger.log(f"{label} ({channel})", None, units=u,
-                               status="INVALID", note=note)
+                    log_rows.append({"measurement": f"{label} ({channel})",
+                                     "value": None, "units": u,
+                                     "status": "INVALID", "note": note})
                     continue
                 agg = _aggregate_measurement(label, vals)
                 note = "" if n_acq == 1 else \
                     f"{_AGG_NAME.get(label, 'mean')} of {len(vals)}/{n_acq} acq"
                 results.append((label, agg, u, note))
-                logger.log(f"{label} ({channel})", agg, units=u,
-                           status="OK", note=note)
+                log_rows.append({"measurement": f"{label} ({channel})",
+                                 "value": agg, "units": u,
+                                 "status": "OK", "note": note})
+
+            # One capture -> one merged group of rows in the workbook.
+            if log_rows:
+                logger.log_capture(log_rows)
 
             times, volts = self.scope.read_waveform(channel)
             return {"channel": channel, "times": times, "volts": volts,
