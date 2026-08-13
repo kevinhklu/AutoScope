@@ -1,54 +1,42 @@
 # AutoScope
 
-Scripted, logged, repeatable bench measurements on a Tektronix MDO4054C,
-replacing manual cursor reads.
+Scripted, logged, repeatable bench measurements on Tektronix MDO4054C and MDO2024B oscilloscopes.
 
-> **Status: prototype.** 
+> **Status: prototype.**
 
 ## Install
 
 ```
 pip install -r requirements.txt
 ```
-Also requires **NI-VISA** installed (from ni.com) to talk to the scope
 
-## Configure
-
-All test settings are in **`config.yaml`**. Edit that file as needed.
-
-Set the scope's VISA resource string:
-```
-set AUTOSCOPE_RESOURCE=USB0::0x0699::0x0456::<serial>::INSTR
-```
-Precedence (highest first): **env vars > `config.local.yaml` > `config.yaml`**.
-Env overrides: `AUTOSCOPE_RESOURCE`, `AUTOSCOPE_SCL`, `AUTOSCOPE_SDA`,
-`AUTOSCOPE_VDD`, `AUTOSCOPE_DELAY`.
+Also requires **NI-VISA** (from ni.com) to talk to the scope over USB.
 
 ## Run
 
-Basic measurement reading (`*IDN?`, `*OPT?`, and a CH1 Vpp, V DC, Frequency, etc):
+All settings — scope resource, bus voltage, I2C limits, CSV log file — are entered in the GUI:
+
 ```
-python measurements.py
+python gui.py
 ```
 
-I2C timing --> captures a live transaction, prints SCL levels, SCL fall/high/low
-times, and per-bit tHD;DAT / tSU;DAT with PASS/FAIL against the configured
-limits, and appends every result to `results/measurements.csv`:
-```
-python i2c.py
-```
+1. Enter the VISA resource string and other settings in the side panel.
+2. Set a **CSV log file name** (saved under `results/`). A new name creates a file with a header row; an existing name **appends** new rows (never overwrites).
+3. Click **Connect**, then **Acquire & Measure** or **I2C Capture**.
 
-Logic tests (no scope required):
+Logic tests (no scope):
+
 ```
 python test_offline.py
 ```
 
 ## Files
-- `config.yaml` — test configuration: channels, bus voltage, thresholds, spec limits
-- `config.py` — loads config (env / config.local.yaml / config.yaml) and evaluates limits
-- `scope_interface.py` — VISA connection, deterministic acquisition, raw waveform read
-- `measurements.py` — built-in measurements (Vpp, Vmean) and the shared read path
-- `i2c.py` — I2C capture and timing (SCL fall/high/low, tHD;DAT, tSU;DAT)
-- `results_log.py` — appends measurements to a CSV (one row per measurement)
+
+- `gui.py` — main application (settings, plot, acquire, I2C, CSV logging)
+- `config.py` — settings dataclass and PASS/FAIL limit evaluation
+- `scope_interface.py` — VISA connection and acquisition
+- `measurements.py` — scope IMMed measurement reads
+- `i2c.py` — I2C capture and timing analysis
+- `results_log.py` — CSV append logging
 - `test_offline.py` — hardware-free logic tests
 - `results/` — CSV logs (git-ignored)
