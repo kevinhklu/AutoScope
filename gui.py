@@ -38,6 +38,17 @@ _BASIC_MEAS = {
 
 _CHANNELS = ("CH1", "CH2", "CH3", "CH4")
 
+# How to combine a measurement across N acquisitions. Peak-type measurements
+# take the worst-case extreme (matches the scope's free-running badge, which is
+# what you want for broadband/emissions capture); the rest average.
+_AGG = {"Vpp": max, "Vmax": max, "Vmin": min}
+_AGG_NAME = {"Vpp": "max", "Vmax": "max", "Vmin": "min"}
+
+
+def _aggregate_measurement(label, vals):
+    fn = _AGG.get(label)
+    return fn(vals) if fn is not None else sum(vals) / len(vals)
+
 # limit_key, label, which bound ("min" or "max")
 _LIMIT_ROWS = (
     ("tscl_fall", "Tscl fall max (ns)", "max"),
@@ -196,7 +207,10 @@ class AutoScopeApp(ctk.CTk):
         ctk.CTkOptionMenu(parent, variable=self.channel_var,
                           values=list(_CHANNELS)).pack(fill="x", pady=2)
 
-        ctk.CTkLabel(parent, text="Measurements (one acquisition)",
+        self.n_acq_entry = self._labeled_entry(
+            parent, "Acquisitions (N) — reports peak over N", "16")
+
+        ctk.CTkLabel(parent, text="Measurements (peak over N acquisitions)",
                      anchor="w").pack(fill="x", pady=(8, 0))
         self.meas_vars: dict[str, ctk.BooleanVar] = {}
         for label in _BASIC_MEAS:
@@ -394,11 +408,15 @@ class AutoScopeApp(ctk.CTk):
         ch = self.channel_var.get()
         selected = self._selected_measurements()
         try:
+            n_acq = int(self._parse_float(self.n_acq_entry.get(),
+                                          "Acquisitions", default=1))
+            if n_acq < 1:
+                raise ValueError("Acquisitions (N) must be at least 1.")
             logger = self._logger_from_gui()
         except ValueError as e:
             self._set_status(str(e))
             return
-        self._run_async(lambda: self._acquire_worker(ch, selected, logger),
+        self._run_async(lambda: self._acquire_worker(ch, selected, logger, n_acq),
                         on_done=self._after_acquire)
 
     def _restore_scope_live(self):
@@ -410,27 +428,47 @@ class AutoScopeApp(ctk.CTk):
             pass
 
     def _acquire_worker(self, channel: str, selected: list[tuple[str, str]],
-                        logger: ResultLogger):
+                        logger: ResultLogger, n_acq: int):
         assert self.scope is not None
         try:
             labels = ", ".join(l for l, _ in selected) or "(plot only)"
-            self._post_status(f"Acquiring {channel} — {labels}...")
             self.scope.write("MEASUrement:REFLevel:METHod PERCent")
             self.scope.ensure_channel_on(channel)
-            self.scope.single_acquisition()
+
+            # Take N acquisitions, collecting each measurement's valid values.
+            collected = {label: [] for label, _ in selected}
+            units = {label: "" for label, _ in selected}
+            for i in range(n_acq):
+                self._post_status(f"Acquiring {channel} — {labels} "
+                                  f"({i + 1}/{n_acq})...")
+                self.scope.single_acquisition()
+                for label, scpi in selected:
+                    m = read_measurement(self.scope, scpi, channel, retries=3)
+                    if m.valid:
+                        collected[label].append(m.value)
+                    units[label] = m.units
+
+            # Aggregate: peak-type measurements keep the worst-case extreme.
             results = []
-            for label, scpi in selected:
-                m = read_measurement(self.scope, scpi, channel, retries=3)
-                results.append((label, m))
-                if m.valid:
-                    logger.log(f"{label} ({channel})", m.value, units=m.units,
-                               status="OK")
-                else:
-                    logger.log(f"{label} ({channel})", None, units=m.units,
-                               status="INVALID", note=m.note)
+            for label, _scpi in selected:
+                vals = collected[label]
+                u = units[label]
+                if not vals:
+                    note = f"no valid reading in {n_acq} acq"
+                    results.append((label, None, u, note))
+                    logger.log(f"{label} ({channel})", None, units=u,
+                               status="INVALID", note=note)
+                    continue
+                agg = _aggregate_measurement(label, vals)
+                note = "" if n_acq == 1 else \
+                    f"{_AGG_NAME.get(label, 'mean')} of {len(vals)}/{n_acq} acq"
+                results.append((label, agg, u, note))
+                logger.log(f"{label} ({channel})", agg, units=u,
+                           status="OK", note=note)
+
             times, volts = self.scope.read_waveform(channel)
             return {"channel": channel, "times": times, "volts": volts,
-                    "results": results, "logger": logger}
+                    "results": results, "logger": logger, "n_acq": n_acq}
         finally:
             self._restore_scope_live()
 
@@ -440,20 +478,22 @@ class AutoScopeApp(ctk.CTk):
             return
         ch = result["channel"]
         logger = result["logger"]
+        n_acq = result["n_acq"]
         self._plot_single(result["times"], result["volts"], ch,
                           title=f"{ch} acquisition")
-        lines = [f"Acquire {ch} ({len(result['times'])} samples)",
+        lines = [f"Acquire {ch} — {n_acq} acquisition(s), "
+                 f"{len(result['times'])} samples",
                  f"Log: {logger.path} (run {logger.run_id})", ""]
         if not result["results"]:
             lines.append("  (no measurements selected)")
-        for label, m in result["results"]:
-            if m.valid:
-                lines.append(f"  {label}: {m.value} {m.units}")
+        for label, value, units, note in result["results"]:
+            if value is None:
+                lines.append(f"  {label}: INVALID — {note}")
             else:
-                lines.append(f"  {label}: INVALID — {m.note}")
+                suffix = f"  ({note})" if note else ""
+                lines.append(f"  {label}: {value:.6g} {units}{suffix}")
         self._set_results("\n".join(lines) + "\n")
-        self._set_status(
-            f"Acquired {ch} — logged to {logger.path}")
+        self._set_status(f"Acquired {ch} ({n_acq}×) — logged to {logger.path}")
 
     def _on_i2c(self):
         try:
