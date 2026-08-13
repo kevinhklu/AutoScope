@@ -106,11 +106,19 @@ class Scope:
 
     def single_acquisition(self) -> None:
         """
-        Arm one single-sequence acquisition and BLOCK until it completes
+        Arm one single-sequence acquisition and BLOCK until it completes.
 
-        *OPC? returns 1 only after the SEQuence finishes, so the follow-on
-        measurement reads a fully-settled, known frame
+        STOP first: between operations the scope is left free-running
+        (restore_live). Arming a single sequence while it is still acquiring
+        makes *OPC? race the in-flight frame — it sometimes returns against a
+        frame that isn't settled for measurement, giving an INTERMITTENT 9.9e37
+        'invalid' on a signal that's clearly on screen. Starting from a known
+        STOPPED state makes each acquisition clean and deterministic.
+
+        *OPC? then returns 1 only after the SEQuence finishes, so the follow-on
+        measurement reads a fully-settled, known frame.
         """
+        self.write("ACQuire:STATE STOP")
         self.write("TRIGger:A:MODe AUTO")
         self.write("ACQuire:STOPAfter SEQuence")
         self.write("ACQuire:STATE RUN")
