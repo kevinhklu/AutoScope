@@ -18,6 +18,27 @@ def is_invalid(value: float) -> bool:
     return abs(value) > _INVALID_THRESHOLD
 
 
+# Tektronix USB vendor id, hex (NI-VISA) and decimal (some backends) forms.
+_TEK_VIDS = ("0x0699", "1689")
+
+
+def find_scope_resource(vendor_ids=_TEK_VIDS):
+    """
+    Return the VISA resource string of the first connected Tektronix USB scope,
+    or None if none is found. Lets the app auto-fill the resource instead of
+    making the user type USB0::0x0699::...::INSTR by hand.
+    """
+    rm = pyvisa.ResourceManager()
+    try:
+        for r in rm.list_resources():
+            u = r.upper()
+            if u.startswith("USB") and any(v.upper() in u for v in vendor_ids):
+                return r
+    finally:
+        rm.close()
+    return None
+
+
 class NoBusActivity(Exception):
     """No qualifying trigger edge arrived in time — e.g. an idle I2C bus."""
 
@@ -71,6 +92,17 @@ class Scope:
         """Installed options string. Look for DPOEMBD (I2C/SPI decode)."""
         # *OPT? is the SCPI-standard installed-options query.
         return self.query("*OPT?")
+
+    def ensure_channel_on(self, channel: str) -> None:
+        """
+        Make sure an analog channel is displayed/acquired BEFORE measuring it.
+
+        An IMMed measurement (or CURVe?) on a channel that is turned OFF returns
+        the invalid sentinel (9.9e37) / no data — which shows up as 'INVALID'
+        even when the scope's own on-screen badge reads fine on a channel that
+        happens to be enabled. Enabling an already-on channel is harmless.
+        """
+        self.write(f"SELect:{channel} ON")
 
     def single_acquisition(self) -> None:
         """

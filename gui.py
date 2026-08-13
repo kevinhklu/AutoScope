@@ -23,11 +23,13 @@ from config import DEFAULT_LIMITS, Config
 from i2c import I2CAnalysisResult, run_i2c_analysis
 from measurements import read_measurement
 from results_log import ResultLogger, resolve_log_path
-from scope_interface import NoBusActivity, Scope
+from scope_interface import NoBusActivity, Scope, find_scope_resource
 
 
 _BASIC_MEAS = {
     "Vpp": "PK2pk",
+    "Vmax": "MAXimum",
+    "Vmin": "MINImum",
     "Vmean": "MEAN",
     "Frequency": "FREQuency",
     "Period": "PERiod",
@@ -66,6 +68,7 @@ class AutoScopeApp(ctk.CTk):
         self._build()
         self._set_status("Enter settings, then Connect.")
         self.after(100, self._drain_ui_queue)
+        self.after(300, self._on_detect)   # auto-fill the VISA resource on launch
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # --- layout ----------------------------------------------------------
@@ -134,9 +137,10 @@ class AutoScopeApp(ctk.CTk):
     def _build_settings(self, parent):
         ctk.CTkLabel(parent, text="Scope", font=ctk.CTkFont(weight="bold")
                      ).pack(anchor="w", pady=(4, 0))
-        self.resource_entry = self._labeled_entry(
-            parent, "VISA resource",
-            "USB0::0x0699::0x0456::<serial>::INSTR")
+        self.resource_entry = self._labeled_entry(parent, "VISA resource", "")
+        self.btn_detect = ctk.CTkButton(parent, text="Auto-detect scope",
+                                        command=self._on_detect)
+        self.btn_detect.pack(fill="x", pady=(4, 0))
 
         conn = ctk.CTkFrame(parent, fg_color="transparent")
         conn.pack(fill="x", pady=(8, 0))
@@ -285,6 +289,22 @@ class AutoScopeApp(ctk.CTk):
     def _set_resource_locked(self, locked: bool):
         state = "disabled" if locked else "normal"
         self.resource_entry.configure(state=state)
+
+    # --- auto-detect -----------------------------------------------------
+    def _on_detect(self):
+        """Fill the resource field with the first connected Tektronix USB scope."""
+        try:
+            res = find_scope_resource()
+        except Exception as e:
+            self._set_status(f"Auto-detect unavailable: {e}")
+            return
+        if res:
+            self.resource_entry.delete(0, "end")
+            self.resource_entry.insert(0, res)
+            self._set_status(f"Detected scope: {res}")
+        else:
+            self._set_status("No scope found — check USB/power, or type the "
+                             "resource string manually.")
 
     # --- connection ------------------------------------------------------
     def _on_connect(self):
