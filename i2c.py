@@ -236,5 +236,5 @@ if __name__ == "__main__":
                 logger.log(label, None, status="INVALID", note=msg)
 
         print(f"\nLogged {logger.run_id} to {logger.path}")
-        print("Sanity check: HIGH ~= Vdd, LOW ~= 0. If HIGH is well below Vdd\n"
-              "or a reading is INVALID, the line may be off-screen or mis-scaled.")
+        print("Check: HIGH ~= Vdd, LOW ~= 0. If HIGH is well below Vdd\n"
+              "or a reading is INVALID, the line may be off screen or mis-scaled.")
