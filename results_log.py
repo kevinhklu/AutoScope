@@ -8,6 +8,8 @@ to (load-modify-save), so the file must not be open in Excel during a run.
 """
 
 import os
+import subprocess
+import sys
 from datetime import datetime
 
 from openpyxl import Workbook, load_workbook
@@ -51,6 +53,22 @@ class ResultLogger:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         self.run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
 
+    def open_in_excel(self):
+        """Create the workbook if needed, then open it in the default Excel app."""
+        if not os.path.exists(self.path) or os.path.getsize(self.path) == 0:
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "measurements"
+            ws.append(HEADERS)
+            wb.save(self.path)
+        if os.name == "nt":
+            os.startfile(self.path)  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", self.path])
+        else:
+            subprocess.Popen(["xdg-open", self.path])
+        return self.path
+
     def log(self, measurement, value, *, units="", status="",
             limit_min_ns=None, limit_max_ns=None, note=""):
         """Log a single measurement as a one-row capture."""
@@ -59,6 +77,68 @@ class ResultLogger:
             "status": status, "limit_min_ns": limit_min_ns,
             "limit_max_ns": limit_max_ns, "note": note,
         }])
+
+    def remove_capture(self, capture_number=None):
+        """Delete every row belonging to a capture number. If omitted, delete the latest one."""
+        if not os.path.exists(self.path) or os.path.getsize(self.path) == 0:
+            raise FileNotFoundError(f"No log file exists at {self.path}.")
+        wb = load_workbook(self.path)
+        ws = wb.active
+        if capture_number is None:
+            candidates = []
+            for row in ws.iter_rows(min_row=2, min_col=_CAPTURE_COL,
+                                    max_col=_CAPTURE_COL, values_only=True):
+                v = row[0]
+                if isinstance(v, int):
+                    candidates.append(v)
+                elif isinstance(v, str) and v.isdigit():
+                    candidates.append(int(v))
+            if not candidates:
+                return None
+            capture_number = max(candidates)
+        else:
+            capture_number = int(capture_number)
+
+        excluded_rows = set()
+        for merged in ws.merged_cells.ranges:
+            min_col, min_row, max_col, max_row = merged.min_col, merged.min_row, merged.max_col, merged.max_row
+            if min_col == _CAPTURE_COL and max_col == _CAPTURE_COL:
+                start_val = ws.cell(min_row, min_col).value
+                if start_val == capture_number or (
+                    isinstance(start_val, str) and start_val.isdigit() and int(start_val) == capture_number
+                ):
+                    for row_idx in range(min_row, max_row + 1):
+                        excluded_rows.add(row_idx)
+
+        for row_idx in range(2, ws.max_row + 1):
+            cell_val = ws.cell(row_idx, _CAPTURE_COL).value
+            if cell_val == capture_number or (
+                isinstance(cell_val, str) and cell_val.isdigit() and int(cell_val) == capture_number
+            ):
+                excluded_rows.add(row_idx)
+
+        if not excluded_rows:
+            return None
+
+        remaining_rows = []
+        for row_idx in range(1, ws.max_row + 1):
+            if row_idx in excluded_rows:
+                continue
+            remaining_rows.append([
+                ws.cell(row_idx, col_idx).value for col_idx in range(1, ws.max_column + 1)
+            ])
+
+        new_wb = Workbook()
+        new_ws = new_wb.active
+        new_ws.title = "measurements"
+        if not remaining_rows:
+            new_ws.append(HEADERS)
+        else:
+            new_ws.append(list(HEADERS))
+            for row in remaining_rows[1:]:
+                new_ws.append(row)
+        new_wb.save(self.path)
+        return capture_number
 
     def log_capture(self, rows):
         """

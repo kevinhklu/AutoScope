@@ -272,6 +272,18 @@ class AutoScopeApp(ctk.CTk):
                      ).pack(anchor="w", pady=(14, 0))
         self.csv_entry = self._labeled_entry(
             p, "File name (.xlsx, saved under results/)", "measurements.xlsx")
+        self.log_error = ctk.CTkLabel(p, text="", text_color=C_FG,
+                                     wraplength=320, anchor="w",
+                                     justify="left")
+        self.log_error.pack(fill="x", pady=(6, 0))
+        self.btn_open_log = ctk.CTkButton(p, text="Open Excel log",
+                                         command=self._on_open_log)
+        self.btn_open_log.pack(fill="x", pady=(4, 0))
+        self.delete_capture_entry = self._labeled_entry(
+            p, "Delete capture # (blank = last capture)", "")
+        self.btn_delete_capture = ctk.CTkButton(
+            p, text="Delete capture", command=self._on_delete_capture)
+        self.btn_delete_capture.pack(fill="x", pady=(6, 0))
         ctk.CTkLabel(p, text="New file -> header row. Existing -> append. "
                      "Close it in Excel before running.",
                      font=ctk.CTkFont(size=11), text_color="gray",
@@ -477,6 +489,32 @@ class AutoScopeApp(ctk.CTk):
     def _logger_from_gui(self) -> ResultLogger:
         path = resolve_log_path(self.csv_entry.get())
         return ResultLogger(path)
+
+    def _on_open_log(self):
+        try:
+            logger = self._logger_from_gui()
+            logger.open_in_excel()
+            self._clear_error(self.log_error)
+            self._set_status(f"Opened Excel log: {logger.path}")
+        except Exception as e:
+            self._show_error(self.log_error, f"Could not open log: {e}")
+
+    def _on_delete_capture(self):
+        try:
+            logger = self._logger_from_gui()
+            txt = self.delete_capture_entry.get().strip()
+            removed = logger.remove_capture(None if not txt else int(txt))
+            if removed is None:
+                raise ValueError("No capture found to delete.")
+            self._clear_error(self.log_error)
+            self.delete_capture_entry.delete(0, "end")
+            self._set_status(f"Deleted capture #{removed} from {logger.path}")
+        except ValueError as e:
+            self._show_error(self.log_error, str(e))
+        except FileNotFoundError as e:
+            self._show_error(self.log_error, str(e))
+        except Exception as e:
+            self._show_error(self.log_error, f"Could not delete capture: {e}")
 
     def _set_resource_locked(self, locked: bool):
         self.resource_entry.configure(state="disabled" if locked else "normal")

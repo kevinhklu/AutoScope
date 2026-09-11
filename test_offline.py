@@ -174,6 +174,30 @@ def test_config_and_logging():
     print("PASS config+logging: evaluate, resolve path, xlsx merged-capture grouping")
 
 
+def test_result_logger_delete_capture():
+    import tempfile
+    import os as _os
+    from openpyxl import load_workbook
+    from results_log import ResultLogger
+
+    d = tempfile.mkdtemp()
+    path = _os.path.join(d, "delete.xlsx")
+    logger = ResultLogger(path)
+    cap1 = logger.log_capture([
+        {"measurement": "Vpp (CH1)", "value": 3.3, "units": "V", "status": "OK"},
+        {"measurement": "Vmax (CH1)", "value": 1.9, "units": "V", "status": "OK"},
+    ])
+    cap2 = logger.log_capture([
+        {"measurement": "Vpp (CH1)", "value": 3.4, "units": "V", "status": "OK"},
+    ])
+    assert cap1 == 1 and cap2 == 2
+    assert logger.remove_capture(1) == 1
+    ws = load_workbook(path).active
+    assert ws.max_row == 2  # header + remaining capture
+    assert ws.cell(row=2, column=1).value == 2
+    print("PASS delete-capture: a capture group can be removed from the workbook")
+
+
 def test_read_measurement_does_not_acquire():
     # On a triggered I2C frame, re-acquiring would destroy the transaction.
     # read_measurement() must read the existing frame and NEVER acquire.
@@ -191,5 +215,6 @@ if __name__ == "__main__":
     test_scl_timing_reflevels()
     test_edge_crossings_and_data_timing()
     test_config_and_logging()
+    test_result_logger_delete_capture()
     test_read_measurement_does_not_acquire()
     print("\nAll offline logic tests passed.")
